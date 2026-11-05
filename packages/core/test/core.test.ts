@@ -11,6 +11,8 @@ import {
   verifyFiles,
   extractInlineScripts,
   verifyInline,
+  verifyDocument,
+  sha256HexJs,
   type Manifest,
 } from '../src/index.ts';
 
@@ -30,7 +32,12 @@ test('sha256 of empty string is the known constant', async () => {
 
 test('record round trip', async () => {
   const h = await sha256Hex('x');
-  assert.deepEqual(parseRecord(formatRecord(h)), { hash: h });
+  assert.deepEqual(parseRecord(formatRecord(h)), { hash: h, hashes: [h] });
+  const h2 = await sha256Hex('y');
+  assert.deepEqual(parseRecord(formatRecord([h2, h])), { hash: h2, hashes: [h2, h] });
+  assert.equal(formatRecord([h, h]), formatRecord(h));
+  assert.equal(parseRecord(`v1:sha256:${h},${h2},${h}`), null);
+  assert.throws(() => formatRecord([h, h2, 'c'.repeat(64)]));
   assert.equal(parseRecord('garbage'), null);
   assert.equal(parseRecord('v1:sha256:zz'), null);
 });
@@ -72,4 +79,28 @@ test('inline scripts are extracted and verified', async () => {
   assert.equal(res[0].status, 'ok');
   const bad = await verifyInline(manifest, ['alert(1)']);
   assert.equal(bad[0].status, 'unlisted');
+});
+
+test('verifyDocument accepts client-side routes only when the HTML is a release page', async () => {
+  const enc = new TextEncoder();
+  const index = enc.encode('<html>app</html>');
+  const manifest: Manifest = { version: 1, files: { '/index.html': await sha256Hex(index), '/a.js': 'a'.repeat(64) } };
+  const spa = async () => index;
+  assert.equal((await verifyDocument(manifest, '/', spa)).status, 'ok');
+  const route = await verifyDocument(manifest, '/dashboard?tab=2', spa);
+  assert.equal(route.status, 'ok');
+  assert.equal(route.note, 'served as /index.html');
+  const other = await verifyDocument(manifest, '/dashboard', async () => enc.encode('<html>evil</html>'));
+  assert.equal(other.status, 'unlisted');
+  assert.equal((await verifyDocument(manifest, '/index.html', async () => enc.encode('x'))).status, 'mismatch');
+  assert.equal((await verifyDocument(manifest, '/gone', async () => null)).status, 'missing');
+});
+
+test('JS SHA-256 fallback matches Web Crypto on block-boundary and large inputs', async () => {
+  const { randomBytes } = await import('node:crypto');
+  for (const n of [0, 1, 55, 56, 63, 64, 65, 119, 120, 1000, 100_000]) {
+    const bytes = new Uint8Array(randomBytes(n));
+    assert.equal(sha256HexJs(bytes), await sha256Hex(bytes), `length ${n}`);
+  }
+  assert.equal(sha256HexJs(new TextEncoder().encode('abc')), 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
 });
