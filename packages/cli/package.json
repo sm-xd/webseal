@@ -1,0 +1,14 @@
+{
+  "name": "@webseal/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": { "webseal": "./dist/webseal.js" },
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "dependencies": {
+    "@webseal/core": "workspace:*",
+    "viem": "^2.57.0"
+  }
+}
