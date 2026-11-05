@@ -1,0 +1,30 @@
+# Builds the demo dApp, writes the integrity manifest, and anchors its hash on ENS.
+# The only secret is a CI key that should own nothing but the ENS record
+# (an ENSv2 per-record permission, or a subname such as webseal.<app>.eth).
+name: release
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+jobs:
+  build-and-anchor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 10 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm test && pnpm e2e
+      - name: Write manifest
+        run: node packages/cli/dist/webseal.js build --dist apps/demo/dist --name "${{ vars.WEBSEAL_ENS_NAME }}"
+      - name: Upload site (replace with your host's deploy step)
+        uses: actions/upload-artifact@v4
+        with: { name: site, path: apps/demo/dist }
+      - name: Anchor manifest hash on ENS
+        if: ${{ vars.WEBSEAL_ENS_NAME != '' }}
+        env:
+          WEBSEAL_PRIVATE_KEY: ${{ secrets.WEBSEAL_CI_KEY }}
+        run: node packages/cli/dist/webseal.js publish --name "${{ vars.WEBSEAL_ENS_NAME }}" --chain "${{ vars.WEBSEAL_CHAIN || 'sepolia' }}"
