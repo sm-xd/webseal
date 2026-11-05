@@ -1,0 +1,16 @@
+{
+  "name": "@webseal/extension",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/icons.mjs && node build.mjs"
+  },
+  "dependencies": {
+    "@webseal/core": "workspace:*",
+    "viem": "^2.57.0"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.1.0"
+  }
+}

@@ -1,0 +1,51 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <span class="dot" id="dot"></span>
+      <div>
+        <div class="title">WebSeal</div>
+        <div class="host" id="host">…</div>
+      </div>
+    </header>
+
+    <section id="summary" class="summary"></section>
+
+    <section id="details" class="details hidden">
+      <div class="row"><span>Anchor</span><span id="anchor" class="mono"></span></div>
+      <div class="row"><span>Expected</span><span id="expected" class="mono"></span></div>
+      <div class="row"><span>Served</span><span id="served" class="mono"></span></div>
+      <ul id="files" class="files"></ul>
+    </section>
+
+    <section class="pin">
+      <div class="label">Trust anchor for this site</div>
+      <div class="pinrow">
+        <input id="name" placeholder="app.eth" spellcheck="false" />
+        <button id="pinName">Pin ENS name</button>
+      </div>
+      <div class="pinrow">
+        <button id="pinHash" class="secondary" title="Developer mode: trust the manifest the server is serving right now">Pin current manifest hash</button>
+        <button id="unpin" class="secondary">Unpin</button>
+        <button id="recheck" class="secondary">Re-check</button>
+      </div>
+    </section>
+
+    <section class="settings">
+      <div class="label">ENS lookup</div>
+      <div class="pinrow">
+        <select id="chain">
+          <option value="mainnet">Ethereum mainnet</option>
+          <option value="sepolia">Sepolia testnet</option>
+        </select>
+        <input id="rpc" placeholder="RPC URL (optional)" spellcheck="false" />
+        <button id="saveSettings" class="secondary">Save</button>
+      </div>
+    </section>
+    <script src="popup.js"></script>
+  </body>
+</html>
