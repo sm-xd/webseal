@@ -1,4 +1,4 @@
-import type { VerifyReport } from '@webseal/core';
+import { MANIFEST_PATH, parseManifest, sha256Hex, type VerifyReport } from '@webseal/core';
 import type { Msg, Pin, Settings, TabState } from './types.ts';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -6,6 +6,7 @@ const send = (msg: Msg) => chrome.runtime.sendMessage(msg);
 
 let tabId: number | undefined;
 let host = '';
+let origin = '';
 let state: TabState | null = null;
 
 function short(h?: string) {
@@ -22,7 +23,8 @@ function render() {
   const anchorText =
     r?.anchor.kind === 'ens' ? `${r.anchor.name} (${r.anchor.chain}${r.anchor.error ? ', ' + r.anchor.error : ''})` : r?.anchor.kind === 'hash' ? 'pinned manifest hash' : 'none';
   if (status === 'unknown') {
-    summary.textContent = 'No trust anchor for this site. Pin an ENS name below to start verifying it.';
+    const note = r?.anchor.kind === 'none' && r.anchor.error ? ` (${r.anchor.error})` : '';
+    summary.textContent = `No trust anchor for this site${note}. Pin an ENS name below to start verifying it.`;
     $('details').classList.add('hidden');
   } else if (status === 'pending') {
     summary.textContent = 'Verifying…';
@@ -64,9 +66,12 @@ async function load() {
   const tab = override ? await chrome.tabs.get(override) : (await chrome.tabs.query({ active: true, currentWindow: true }))[0];
   tabId = tab?.id;
   try {
-    host = new URL(tab?.url ?? '').host;
+    const u = new URL(tab?.url ?? '');
+    host = /^https?:$/.test(u.protocol) ? u.host : '';
+    origin = host ? u.origin : '';
   } catch {
     host = '';
+    origin = '';
   }
   $('host').textContent = host || '(no page)';
   state = tabId !== undefined ? ((await send({ type: 'getStatus', tabId })) as TabState | null) : null;
@@ -87,33 +92,42 @@ async function setPinAndReload(pin: Pin | null) {
 
 $('pinName').addEventListener('click', () => {
   const name = $<HTMLInputElement>('name').value.trim().toLowerCase();
-  if (!name.endsWith('.eth')) {
-    $('summary').textContent = 'Enter an ENS name ending in .eth';
+  // ENS also resolves DNS names (example.com) and other TLDs, so any dotted name is accepted;
+  // the service worker reports a lookup error if it does not resolve.
+  if (!/^[^\s.]+(\.[^\s.]+)+$/.test(name)) {
+    $('summary').textContent = 'Enter an ENS name, for example app.eth';
     return;
   }
   setPinAndReload({ kind: 'ens', name });
 });
 $('pinHash').addEventListener('click', async () => {
   const hash = state?.report?.manifest.actual;
-  if (!hash) {
-    // Not verified yet: fetch the served manifest directly.
-    try {
-      const res = await fetch(new URL('/.well-known/webseal.json', `http://${host}`), { cache: 'no-store' });
-      const buf = await res.arrayBuffer();
-      const d = await crypto.subtle.digest('SHA-256', buf);
-      const h = Array.from(new Uint8Array(d), (b) => b.toString(16).padStart(2, '0')).join('');
-      return setPinAndReload({ kind: 'hash', hash: h });
-    } catch {
-      $('summary').textContent = 'This site does not serve /.well-known/webseal.json';
-      return;
-    }
+  if (hash) return setPinAndReload({ kind: 'hash', hash });
+  // Not verified yet: fetch the served manifest directly, from the tab's own origin.
+  try {
+    if (!origin) throw new Error('no page');
+    const res = await fetch(new URL(MANIFEST_PATH, origin), { cache: 'no-store' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const raw = new Uint8Array(await res.arrayBuffer());
+    parseManifest(new TextDecoder().decode(raw)); // refuse to pin something that is not a manifest
+    return setPinAndReload({ kind: 'hash', hash: await sha256Hex(raw) });
+  } catch (e) {
+    $('summary').textContent = `This site does not serve a valid ${MANIFEST_PATH} (${(e as Error).message})`;
   }
-  setPinAndReload({ kind: 'hash', hash });
 });
 $('unpin').addEventListener('click', () => setPinAndReload(null));
 $('recheck').addEventListener('click', async () => {
-  if (tabId !== undefined) await chrome.tabs.reload(tabId);
-  window.close();
+  if (tabId === undefined) return;
+  $('summary').textContent = 'Re-checking…';
+  // Re-verify in place: fresh ENS lookup, fresh manifest, every file again. A
+  // page that already failed stays failed until it is reloaded.
+  const r = (await chrome.tabs.sendMessage(tabId, { type: 'recheck' } satisfies Msg, { frameId: 0 }).catch(() => null)) as { status?: string } | null;
+  if (!r?.status) {
+    await chrome.tabs.reload(tabId); // no verifier in the tab (e.g. it was open before install)
+    return window.close();
+  }
+  state = (await send({ type: 'getStatus', tabId })) as TabState | null;
+  render();
 });
 $('saveSettings').addEventListener('click', async () => {
   const settings: Settings = { chain: $<HTMLSelectElement>('chain').value as Settings['chain'], rpc: $<HTMLInputElement>('rpc').value.trim() || undefined };
