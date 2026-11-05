@@ -1,0 +1,8 @@
+{
+  "name": "@webseal/core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": { "build": "echo core is consumed as TypeScript source" }
+}

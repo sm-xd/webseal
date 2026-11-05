@@ -1,0 +1,75 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import {
+  canonicalize,
+  sha256Hex,
+  manifestHash,
+  formatRecord,
+  parseRecord,
+  normalizePath,
+  deriveNameFromHost,
+  verifyFiles,
+  extractInlineScripts,
+  verifyInline,
+  type Manifest,
+} from '../src/index.ts';
+
+test('canonicalize sorts keys and drops undefined', () => {
+  assert.equal(canonicalize({ b: 1, a: { d: [1, 2], c: undefined } }), '{"a":{"d":[1,2]},"b":1}');
+});
+
+test('manifest hash is order independent', async () => {
+  const a: Manifest = { version: 1, files: { '/a.js': 'a'.repeat(64), '/b.js': 'b'.repeat(64) } };
+  const b: Manifest = { files: { '/b.js': 'b'.repeat(64), '/a.js': 'a'.repeat(64) }, version: 1 };
+  assert.equal(await manifestHash(a), await manifestHash(b));
+});
+
+test('sha256 of empty string is the known constant', async () => {
+  assert.equal(await sha256Hex(''), 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855');
+});
+
+test('record round trip', async () => {
+  const h = await sha256Hex('x');
+  assert.deepEqual(parseRecord(formatRecord(h)), { hash: h });
+  assert.equal(parseRecord('garbage'), null);
+  assert.equal(parseRecord('v1:sha256:zz'), null);
+});
+
+test('normalizePath', () => {
+  assert.equal(normalizePath(''), '/index.html');
+  assert.equal(normalizePath('/'), '/index.html');
+  assert.equal(normalizePath('/app/'), '/app/index.html');
+  assert.equal(normalizePath('/a.js?v=2#x'), '/a.js');
+  assert.equal(normalizePath('http://x.test/assets/i.js?q'), '/assets/i.js');
+  assert.equal(normalizePath('assets//i.js'), '/assets/i.js');
+});
+
+test('deriveNameFromHost', () => {
+  assert.equal(deriveNameFromHost('app.eth.limo'), 'app.eth');
+  assert.equal(deriveNameFromHost('sub.app.eth.link:443'), 'sub.app.eth');
+  assert.equal(deriveNameFromHost('localhost:4173'), null);
+});
+
+test('verifyFiles reports ok, mismatch, missing, unlisted', async () => {
+  const good = new TextEncoder().encode('console.log(1)');
+  const manifest: Manifest = {
+    version: 1,
+    files: { '/a.js': await sha256Hex(good), '/b.js': 'c'.repeat(64), '/gone.js': 'd'.repeat(64) },
+  };
+  const fetcher = async (p: string) =>
+    p === '/a.js' ? good : p === '/b.js' ? new TextEncoder().encode('evil') : null;
+  const res = await verifyFiles(manifest, ['/a.js?x=1', '/b.js', '/gone.js', '/injected.js'], fetcher);
+  const byPath = Object.fromEntries(res.map((r) => [r.path, r.status]));
+  assert.deepEqual(byPath, { '/a.js': 'ok', '/b.js': 'mismatch', '/gone.js': 'missing', '/injected.js': 'unlisted' });
+});
+
+test('inline scripts are extracted and verified', async () => {
+  const html = `<html><script src="/a.js"></script><script>window.x=1</script><script type="application/json">{}</script></html>`;
+  const bodies = extractInlineScripts(html);
+  assert.deepEqual(bodies, ['window.x=1']);
+  const manifest: Manifest = { version: 1, files: {}, inline: [await sha256Hex('window.x=1')] };
+  const res = await verifyInline(manifest, bodies);
+  assert.equal(res[0].status, 'ok');
+  const bad = await verifyInline(manifest, ['alert(1)']);
+  assert.equal(bad[0].status, 'unlisted');
+});

@@ -1,0 +1,30 @@
+{
+  "name": "webseal-monorepo",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.28.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "pnpm -r --filter ./packages/** run build && pnpm --filter demo run build",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --experimental-strip-types --test packages/core/test/*.test.ts",
+    "e2e": "node scripts/e2e.mjs",
+    "demo:serve": "node apps/demo/server.mjs",
+    "demo:tamper": "node apps/demo/tamper.mjs",
+    "demo:restore": "node apps/demo/restore.mjs",
+    "demo": "node scripts/demo.mjs"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.1.43",
+    "@types/node": "^26.6.6",
+    "esbuild": "^0.25.10",
+    "typescript": "^5.9.3"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  }
+}
