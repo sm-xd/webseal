@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Acme Treasury</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <main>
+      <h1>Acme Treasury</h1>
+      <p class="sub">Demo dApp for WebSeal. Nothing here is real money.</p>
+
+      <section class="card">
+        <h2>Wallet</h2>
+        <p id="account" class="mono">Not connected</p>
+        <button id="connect">Connect wallet</button>
+      </section>
+
+      <section class="card">
+        <h2>Send 0.01 ETH to treasury</h2>
+        <p>Recipient shown to the user:</p>
+        <p class="mono" id="treasury-shown">0x1111111111111111111111111111111111111111</p>
+        <button id="send" disabled>Send 0.01 ETH</button>
+      </section>
+
+      <section class="card">
+        <h2>Sign in</h2>
+        <button id="sign" disabled>Sign message</button>
+      </section>
+
+      <pre id="log" class="log"></pre>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

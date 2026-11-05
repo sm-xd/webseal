@@ -1,0 +1,16 @@
+{
+  "name": "demo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite"
+  },
+  "dependencies": {
+    "viem": "^2.57.0"
+  },
+  "devDependencies": {
+    "vite": "^7.1.0"
+  }
+}
