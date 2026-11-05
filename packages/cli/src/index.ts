@@ -16,12 +16,12 @@ import {
   type FileResult,
   type Manifest,
 } from '@webseal/core';
-import { readRecord, writeRecord } from './ens.ts';
+import { readRecord, readRecordWithFallback, writeRecord } from './ens.ts';
 
 const USAGE = `webseal: anchor a web frontend's build hash on ENS and verify what a server serves.
 
   webseal build   [--dist dist] [--name app.eth] [--out dist/.well-known/webseal.json] [--no-commit]
-  webseal publish --name app.eth [--chain sepolia|mainnet] [--rpc URL] [--manifest path | --hash HEX] [--dry-run]
+  webseal publish --name app.eth [--chain sepolia|mainnet] [--rpc URL] [--manifest path | --hash HEX] [--keep-current] [--dry-run]
                   private key: --key 0x... or env WEBSEAL_PRIVATE_KEY
   webseal record  --name app.eth [--chain sepolia|mainnet] [--rpc URL]
   webseal verify  URL [--name app.eth | --expect HEX] [--chain sepolia|mainnet] [--rpc URL] [--json]
@@ -111,20 +111,38 @@ async function cmdPublish(args: string[]) {
       hash: { type: 'string' },
       key: { type: 'string' },
       'dry-run': { type: 'boolean', default: false },
+      'keep-current': { type: 'boolean', default: false },
     },
   });
   if (!values.name) throw new Error('--name is required');
   const hash = await hashFromArgs(values);
-  const value = formatRecord(hash);
+  // --keep-current: start a rollout. The record lists the new hash first and keeps the newest
+  // current one, so the old build stays valid until the new one is live. Publish again
+  // without the flag once the site serves the new build.
+  let hashes = [hash];
+  if (values['keep-current']) {
+    const cur = parseRecord((await readRecord(values.name, values.chain, values.rpc)).value);
+    if (cur && cur.hash !== hash) hashes = [hash, cur.hash];
+  }
+  const value = formatRecord(hashes);
   console.log(`name      ${values.name} (${values.chain})`);
   console.log(`record    ${value}`);
   if (values['dry-run']) return;
   const key = (values.key ?? process.env.WEBSEAL_PRIVATE_KEY) as `0x${string}` | undefined;
   if (!key) throw new Error('private key missing: pass --key or set WEBSEAL_PRIVATE_KEY');
+  const current = await readRecord(values.name, values.chain, values.rpc);
+  if (current.value === value) {
+    console.log(`unchanged the record already has this value; no transaction sent`);
+    return;
+  }
   const r = await writeRecord({ name: values.name, value, chainName: values.chain, rpc: values.rpc, privateKey: key });
   console.log(`from      ${r.from}`);
   console.log(`resolver  ${r.resolver}`);
   console.log(`tx        ${r.tx} (${r.status})`);
+  if (r.status !== 'success') throw new Error(`transaction ${r.tx} did not succeed (${r.status})`);
+  const after = await readRecord(values.name, values.chain, values.rpc);
+  if (after.value !== value) throw new Error(`record reads back as ${after.value ?? '(none)'} after the transaction, expected ${value}`);
+  console.log(`readback  ok`);
 }
 
 async function cmdRecord(args: string[]) {
@@ -133,11 +151,13 @@ async function cmdRecord(args: string[]) {
     options: { name: { type: 'string' }, chain: { type: 'string', default: 'sepolia' }, rpc: { type: 'string' } },
   });
   if (!values.name) throw new Error('--name is required');
-  const r = await readRecord(values.name, values.chain, values.rpc);
+  const r = await readRecordWithFallback(values.name, values.chain, values.rpc);
   console.log(`name      ${r.name} (${r.chain})`);
+  if (r.from !== r.name) console.log(`found on  ${r.from}`);
   console.log(`record    ${r.value ?? '(none)'}`);
   const parsed = parseRecord(r.value);
-  console.log(`hash      ${parsed ? parsed.hash : '(unparseable or missing)'}`);
+  console.log(`hash      ${parsed ? parsed.hashes.join(', ') : '(unparseable or missing)'}`);
+  if (parsed && parsed.hashes.length > 1) console.log('note      rollout in progress: both builds are accepted until the record is finalized');
 }
 
 function icon(s: FileResult['status']) {
@@ -161,16 +181,20 @@ async function cmdVerify(args: string[]) {
   const origin = new URL(base);
 
   let expected: string | undefined;
-  let anchor: { kind: 'ens' | 'hash'; name?: string; chain?: string } | undefined;
+  let accepted: string[] | undefined;
+  let anchor: { kind: 'ens' | 'hash'; name?: string; from?: string; chain?: string } | undefined;
   if (values.expect) {
     expected = values.expect.toLowerCase().replace(/^0x/, '');
+    if (!/^[0-9a-f]{64}$/.test(expected)) throw new Error('--expect must be 64 hex characters');
     anchor = { kind: 'hash' };
   } else if (values.name) {
-    const r = await readRecord(values.name, values.chain, values.rpc);
+    // Same lookup as the extension: the name, then webseal.<name>.
+    const r = await readRecordWithFallback(values.name, values.chain, values.rpc);
     const parsed = parseRecord(r.value);
-    if (!parsed) throw new Error(`no usable "webseal" text record on ${r.name} (${r.chain}): ${r.value ?? 'empty'}`);
+    if (!parsed) throw new Error(`no usable "webseal" text record on ${r.name} or webseal.${r.name} (${r.chain}): ${r.value ?? 'empty'}`);
     expected = parsed.hash;
-    anchor = { kind: 'ens', name: r.name, chain: r.chain };
+    accepted = parsed.hashes;
+    anchor = { kind: 'ens', name: r.name, from: r.from, chain: r.chain };
   } else {
     throw new Error('give --name app.eth (ENS anchor) or --expect HEX (manual anchor)');
   }
@@ -187,7 +211,7 @@ async function cmdVerify(args: string[]) {
   const manifestText = new TextDecoder().decode(manifestRaw);
   const manifest = parseManifest(manifestText);
   const actual = await sha256Hex(manifestRaw);
-  const manifestOk = actual === expected;
+  const manifestOk = (accepted ?? [expected]).includes(actual);
 
   const files = await verifyFiles(manifest, Object.keys(manifest.files), fetchPath);
   const { ok, bad } = summarize(files);
@@ -196,7 +220,7 @@ async function cmdVerify(args: string[]) {
   if (values.json) {
     console.log(JSON.stringify({ ok: allOk, anchor, manifest: { expected, actual, ok: manifestOk }, files }, null, 2));
   } else {
-    console.log(`anchor    ${anchor.kind === 'ens' ? `${anchor.name} (${anchor.chain})` : 'manual hash'}`);
+    console.log(`anchor    ${anchor.kind === 'ens' ? `${anchor.name} (${anchor.chain})${anchor.from !== anchor.name ? ` via ${anchor.from}` : ''}` : 'manual hash'}`);
     console.log(`manifest  ${manifestOk ? 'ok' : 'MISMATCH'}  expected ${expected}`);
     if (!manifestOk) console.log(`                       served   ${actual}`);
     for (const f of files) {
