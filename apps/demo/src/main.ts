@@ -1,4 +1,4 @@
-import { createWalletClient, custom, parseEther, type Address, type EIP1193Provider } from 'viem';
+import { BaseError, createWalletClient, custom, parseEther, type Address, type EIP1193Provider } from 'viem';
 import { sepolia } from 'viem/chains';
 
 // The address the transaction actually goes to. The tamper script changes
@@ -19,6 +19,16 @@ declare global {
 }
 
 let account: Address | undefined;
+
+// viem replaces a provider error's message with a generic one per error code (4100 becomes
+// "not authorized by the user"); show the wallet's (or WebSeal's) own message instead.
+function reason(e: unknown): string {
+  if (e instanceof BaseError) {
+    const root = e.walk();
+    return root instanceof Error && root.message ? root.message.split(/\r?\n/)[0] : e.shortMessage;
+  }
+  return (e as Error).message;
+}
 
 function provider(): EIP1193Provider {
   if (!window.ethereum) throw new Error('no wallet found: install MetaMask or another EIP-1193 wallet');
@@ -53,7 +63,7 @@ $('connect').addEventListener('click', async () => {
     $<HTMLButtonElement>('sign').disabled = false;
     log(`connected ${account}`);
   } catch (e) {
-    log(`connect failed: ${(e as Error).message}`);
+    log(`connect failed: ${reason(e)}`);
   }
 });
 
@@ -65,7 +75,7 @@ $('send').addEventListener('click', async () => {
     const hash = await client.sendTransaction({ account: account!, to: TREASURY, value: parseEther('0.01') });
     log(`sent: ${hash}`);
   } catch (e) {
-    log(`send failed: ${(e as Error).message}`);
+    log(`send failed: ${reason(e)}`);
   }
 });
 
@@ -75,6 +85,6 @@ $('sign').addEventListener('click', async () => {
     const sig = await client.signMessage({ account: account!, message: `Sign in to Acme Treasury at ${new Date().toISOString()}` });
     log(`signature: ${sig.slice(0, 20)}...`);
   } catch (e) {
-    log(`sign failed: ${(e as Error).message}`);
+    log(`sign failed: ${reason(e)}`);
   }
 });

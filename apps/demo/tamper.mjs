@@ -8,11 +8,13 @@ const here = dirname(fileURLToPath(import.meta.url));
 const DIST = join(here, 'dist');
 const CLEAN = join(here, 'dist-clean');
 const TREASURY = '0x1111111111111111111111111111111111111111';
-const ATTACKER = process.env.ATTACKER ?? '0xBAD0000000000000000000000000000000000bad';
+// All lower case: a mixed-case address must pass the EIP-55 checksum, and viem refuses
+// one that does not before the wallet (or WebSeal) ever sees the transaction.
+const ATTACKER = (process.env.ATTACKER ?? '0xbad0000000000000000000000000000000000bad').toLowerCase();
 
 const assets = join(DIST, 'assets');
 const jsFiles = (await readdir(assets)).filter((n) => n.endsWith('.js'));
-const alreadyTampered = (await Promise.all(jsFiles.map((n) => readFile(join(assets, n), 'utf8')))).some((s) => s.includes(ATTACKER));
+const alreadyTampered = (await Promise.all(jsFiles.map((n) => readFile(join(assets, n), 'utf8')))).some((s) => s.toLowerCase().includes(ATTACKER));
 if (!alreadyTampered) {
   // Always refresh the backup from the current clean build, so a rebuild never restores a stale copy.
   await rm(CLEAN, { recursive: true, force: true });

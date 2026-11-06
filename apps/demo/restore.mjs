@@ -7,11 +7,13 @@ import { fileURLToPath } from 'node:url';
 const here = dirname(fileURLToPath(import.meta.url));
 const DIST = join(here, 'dist');
 const CLEAN = join(here, 'dist-clean');
-const ATTACKER = process.env.ATTACKER ?? '0xBAD0000000000000000000000000000000000bad';
+// All lower case: a mixed-case address must pass the EIP-55 checksum, and viem refuses
+// one that does not before the wallet (or WebSeal) ever sees the transaction.
+const ATTACKER = (process.env.ATTACKER ?? '0xbad0000000000000000000000000000000000bad').toLowerCase();
 
 const assets = join(DIST, 'assets');
 const names = (await readdir(assets).catch(() => [])).filter((n) => n.endsWith('.js'));
-const tampered = (await Promise.all(names.map((n) => readFile(join(assets, n), 'utf8')))).some((s) => s.includes(ATTACKER));
+const tampered = (await Promise.all(names.map((n) => readFile(join(assets, n), 'utf8')))).some((s) => s.toLowerCase().includes(ATTACKER));
 
 if (!tampered) {
   console.log('build is clean, nothing to restore');
