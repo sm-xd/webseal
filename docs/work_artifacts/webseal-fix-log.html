@@ -1,0 +1,564 @@
+<title>WebSeal Fix Log</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=Source+Sans+3:wght@400;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: a single reading column; each issue is a ruled entry with a severity stripe, "was / changed / proof" rows, and the test that proves it. */
+:root {
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --ink: #18202b;
+  --muted: #5a6474;
+  --rule: #dde1e8;
+  --accent: #8a1c2b;          /* sealing-wax red, used sparingly */
+  --ok: #1a7f3c;
+  --crit: #b00020;
+  --high: #c2410c;
+  --med: #a16207;
+  --low: #4b5b70;
+  --found: #6d28d9;
+  --code-bg: #eef1f5;
+  --display: "Bricolage Grotesque", "Segoe UI", system-ui, sans-serif;
+  --body: "Source Sans 3", "Segoe UI", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #11151b; --surface: #181d25; --ink: #e6e9ee; --muted: #9aa4b2; --rule: #2a313c;
+    --accent: #e0606f; --ok: #4ccb7a; --crit: #ff6b7d; --high: #fb8c4a; --med: #e4b44c; --low: #9fb0c6; --found: #b195f5;
+    --code-bg: #222934; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #11151b; --surface: #181d25; --ink: #e6e9ee; --muted: #9aa4b2; --rule: #2a313c;
+  --accent: #e0606f; --ok: #4ccb7a; --crit: #ff6b7d; --high: #fb8c4a; --med: #e4b44c; --low: #9fb0c6; --found: #b195f5;
+  --code-bg: #222934; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--ink);
+  font: 16px/1.55 var(--body);
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 32px 64px;
+}
+.wrap { max-width: 860px; margin: 0 auto; display: grid; gap: 40px; }
+h1, h2, h3 { font-family: var(--display); text-wrap: balance; margin: 0; line-height: 1.15; }
+h1 { font-size: clamp(30px, 5vw, 42px); font-weight: 700; letter-spacing: -0.01em; }
+h2 { font-size: 24px; font-weight: 700; }
+h3 { font-size: 18px; font-weight: 600; }
+p { margin: 0; max-width: 68ch; }
+code, .mono { font-family: var(--mono); font-size: 0.86em; }
+code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
+a { color: var(--accent); }
+a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+header { display: grid; gap: 14px; }
+.eyebrow { font: 500 12px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); }
+.lede { color: var(--muted); font-size: 17px; }
+
+/* test totals, before -> after */
+.totals { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+.total { background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; padding: 14px 16px; display: grid; gap: 4px; }
+.total .label { font-size: 13px; color: var(--muted); }
+.total .num { font: 600 24px/1.1 var(--mono); font-variant-numeric: tabular-nums; }
+.total .num .was { color: var(--muted); font-weight: 400; font-size: 17px; }
+.total .note { font-size: 13px; color: var(--ok); }
+
+section { display: grid; gap: 16px; }
+.section-head { display: grid; gap: 6px; border-bottom: 2px solid var(--ink); padding-bottom: 10px; }
+.section-head p { color: var(--muted); }
+
+.issues { display: grid; gap: 14px; }
+.issue {
+  background: var(--surface); border: 1px solid var(--rule); border-left: 5px solid var(--sev);
+  border-radius: 6px; padding: 16px 18px; display: grid; gap: 10px; min-width: 0;
+}
+.issue-top { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 12px; }
+.issue-top h3 { flex: 1 1 320px; min-width: 0; }
+.id { font: 500 13px/1 var(--mono); color: var(--muted); }
+.chip { font: 600 11px/1 var(--mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--sev); border: 1px solid var(--sev); border-radius: 999px; padding: 4px 8px; white-space: nowrap; }
+.sev-crit { --sev: var(--crit); }
+.sev-high { --sev: var(--high); }
+.sev-med { --sev: var(--med); }
+.sev-low { --sev: var(--low); }
+.sev-found { --sev: var(--found); }
+.rows { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 6px 14px; }
+.rows dt { font: 500 12px/1.6 var(--mono); text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); padding-top: 2px; }
+.rows dd { margin: 0; min-width: 0; }
+.proof { color: var(--ok); }
+.proof.partial { color: var(--med); }
+.files { font-size: 14px; color: var(--muted); }
+@media (max-width: 520px) {
+  .rows { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+  .rows dd { margin-bottom: 8px; }
+}
+
+.remaining { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.remaining li { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 14px 16px; display: grid; gap: 6px; }
+.remaining .why { color: var(--muted); font-size: 15px; }
+.remaining .next { font-size: 15px; }
+.remaining .tag { font: 600 11px/1 var(--mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+
+.cmds { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; overflow-x: auto; }
+.cmds pre { margin: 0; padding: 14px 16px; font: 13.5px/1.7 var(--mono); }
+.cmds .c { color: var(--muted); }
+footer { color: var(--muted); font-size: 14px; display: grid; gap: 6px; }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">WebSeal · review and fix log · 2026-11-05, round 2 on 2026-11-06</div>
+    <h1>WebSeal Fix Log</h1>
+    <p class="lede">The review found that the tamper detection worked but the wallet block could be bypassed by the tampered page's own code, plus false alarms on real dApps. This log lists every issue, what changed, and the test that proves it. Round 2 worked through the open items from round 1 and added an automatic demo recorder, which exposed two demo bugs. What is still open is at the end.</p>
+  </header>
+
+  <div class="totals" aria-label="Test results before and after">
+    <div class="total"><span class="label">Core unit tests</span><span class="num"><span class="was">8 →</span> 10/10</span><span class="note">all pass</span></div>
+    <div class="total"><span class="label">CLI end-to-end</span><span class="num"><span class="was">4 →</span> 8/8</span><span class="note">all pass, ENS paths included</span></div>
+    <div class="total"><span class="label">Browser end-to-end</span><span class="num"><span class="was">17 →</span> 60/60</span><span class="note">all pass, none skipped</span></div>
+    <div class="total"><span class="label">Wallet-gate bypasses</span><span class="num">14 → 0</span><span class="note">3 from review, 11 found while fixing</span></div>
+  </div>
+
+  <section>
+    <div class="section-head">
+      <h2>Wallet gate bypasses</h2>
+      <p>In each case, code on a tampered page got <code>eth_sendTransaction</code> to the wallet. The fix assumes the page's own code is the attacker, which is the Bybit situation.</p>
+    </div>
+    <div class="issues">
+
+      <article class="issue sev-crit">
+        <div class="issue-top"><span class="id">#1</span><h3>Overriding a built-in turned the gate off</h3><span class="chip">Critical</span></div>
+        <dl class="rows">
+          <dt>Was</dt><dd>The gate called <code>SIGNING_METHODS.includes(method)</code> on every request, so <code>Array.prototype.includes = () =&gt; false</code> let signing through.</dd>
+          <dt>Changed</dt><dd>The page-world script now saves every built-in it uses before the first page script runs. Signing methods sit in a private lookup table with no prototype. The code avoids spread, <code>for…of</code> and array destructuring, since those all go through the array iterator, which page code can patch.</dd>
+          <dt>Proof</dt><dd class="proof">e2e: “bypass blocked: overriding Array.prototype.includes”</dd>
+        </dl>
+        <div class="files"><code>packages/extension/src/main.ts</code></div>
+      </article>
+
+      <article class="issue sev-crit">
+        <div class="issue-top"><span class="id">#2</span><h3>Page code could forge the “ok” verdict</h3><span class="chip">Critical</span></div>
+        <dl class="rows">
+          <dt>Was</dt><dd>Verdicts arrived as <code>postMessage</code> messages keyed with <code>sha256(token:seq)</code>, but the check used <code>crypto.subtle.digest</code> from the page world. Replacing it made any key match, so a forged “ok” unlocked signing, even after the real “fail” had arrived.</dd>
+          <dt>Changed</dt><dd>Replaced the protocol with a private channel. <code>main.ts</code> creates a detached <code>&lt;webseal-channel&gt;</code> element, and <code>content.ts</code> takes it out of the document in the same injection step, before any page script runs. The status is the event type, so no getter page code could patch is involved. A handshake is accepted only while the page has no scripts yet. “fail” is sticky until reload.</dd>
+          <dt>Proof</dt><dd class="proof">e2e: “overriding crypto.subtle.digest and posting a forged verdict”, “forged status message from the page does not unblock”</dd>
+        </dl>
+        <div class="files"><code>main.ts</code> · <code>content.ts</code> · new <code>channel.ts</code></div>
+      </article>
+
+      <article class="issue sev-crit">
+        <div class="issue-top"><span class="id">#3</span><h3>Same-origin iframes and popups had an unguarded wallet</h3><span class="chip">Critical</span></div>
+        <dl class="rows">
+          <dt>Was</dt><dd>WebSeal only ran in the top frame. A tampered page could create a same-origin iframe and use <code>iframe.contentWindow.ethereum</code> directly.</dd>
+          <dt>Changed</dt><dd>Both scripts now run in all frames, including <code>about:blank</code>, <code>srcdoc</code> and <code>blob:</code> ones. A same-origin subframe, or a window opened by a same-origin page, takes the worse of its own verdict and the related page's. A failure in either one fails both, routed through the service worker. Same-origin is checked with <code>window.origin</code>, because an <code>about:blank</code> frame reports <code>location.origin</code> as <code>"null"</code>. I caught that one with a real wallet-extension test.</dd>
+          <dt>Proof</dt><dd class="proof">e2e: same-origin iframe on a clean release file, about:blank iframe, window opened on a clean release file, and with a wallet installed as an extension: blocked via window, EIP-6963, about:blank, srcdoc</dd>
+        </dl>
+        <div class="files"><code>manifest.json</code> · <code>content.ts</code> · <code>background.ts</code> · new fixture <code>scripts/fixtures/fake-wallet</code></div>
+      </article>
+
+      <article class="issue sev-found">
+        <div class="issue-top"><span class="id">#4</span><h3>A captured verdict could be replayed with the status flipped</h3><span class="chip">Found while fixing</span></div>
+        <dl class="rows">
+          <dt>Was</dt><dd>The key covered the sequence number, not the status. A capture-phase listener runs before the extension's own listener, so it could catch the real “fail” and re-post it as “ok” with the same valid key.</dd>
+          <dt>Changed</dt><dd>Fixed by the private channel (#2): page code never sees a verdict.</dd>
+          <dt>Proof</dt><dd class="proof">e2e: “replaying a captured verdict with status flipped”</dd>
+        </dl>
+      </article>
+
+      <article class="issue sev-found">
+        <div class="issue-top"><span class="id">#5</span><h3>A getter could show the gate one method and the wallet another</h3><span class="chip">Found while fixing</span></div>
+        <dl class="rows">
+          <dt>Was</dt><dd>A <code>method</code> getter returned <code>eth_chainId</code> when the gate read it and <code>eth_sendTransaction</code> when the wallet read it.</dd>
+          <dt>Changed</dt><dd>The request's method and params are read once, and the wallet receives a fresh copy. A non-string method is rejected.</dd>
+          <dt>Proof</dt><dd class="proof">e2e: “a method getter that changes between gate and wallet”</dd>
+        </dl>
+      </article>
+
+      <article class="issue sev-found">
+        <div class="issue-top"><span class="id">#6</span><h3>Batched legacy calls skipped the check</h3><span class="chip">Found while fixing</span></div>
+        <dl class="rows">
+          <dt>Was</dt><dd><code>sendAsync([{ method: 'eth_sendTransaction' }])</code> wasn't inspected, because the first argument was an array.</dd>
+          <dt>Changed</dt><dd>Every provider method other than <code>request</code> (<code>send</code>, <code>sendAsync</code>, internal ones like <code>_rpcRequest</code>) inspects its first argument as a string, a payload or a batch. It copies payloads and refuses signing while the page isn't verified.</dd>
+          <dt>Proof</dt><dd class="proof">e2e: “a batched legacy sendAsync call”</dd>
+        </dl>
+      </article>
+
+      <article class="issue sev-found">
+        <div class="issue-top"><span class="id">#7</span><h3>Page code could replace <code>ethereum.request</code></h3><span class="chip">Found while fixing</span></div>
+        <dl class="rows">
+          <dt>Was</dt><dd>Assigning a function to <code>ethereum.request</code> wrote it onto the raw provider. The wrapper then called it with the raw provider as <code>this</code>.</dd>
+          <dt>Changed</dt><dd>The wrapper refuses to store functions on the provider and refuses <code>defineProperty</code>. Plain values, such as flags some libraries set, still go through.</dd>
+          <dt>Proof</dt><dd class="proof">e2e: “replacing ethereum.request on the provider”</dd>
+        </dl>
+      </article>
+
+      <article class="issue sev-found">
+        <div class="issue-top"><span class="id">#8</span><h3>The raw provider leaked through event listeners and <code>on()</code></h3><span class="chip">Found while fixing</span></div>
+        <dl class="rows">
+          <dt>Was</dt><dd>Providers built on EventEmitter call listeners with the provider itself as <code>this</code>, and <code>on()</code> returns it. Either way, page code ended up holding the unwrapped wallet.</dd>
+          <dt>Changed</dt><dd>Callbacks passed in by the page are wrapped so they receive the wrapper as <code>this</code>, with a stable identity so <code>removeListener</code> still works. Any method that returns the raw provider returns the wrapper instead. <code>ethereum.providers</code> entries are wrapped too.</dd>
+          <dt>Proof</dt><dd class="proof">e2e: “the raw provider leaking as `this` in an event listener”, “the raw provider returned by on()”</dd>
+        </dl>
+      </article>
+
+      <article class="issue sev-found">
+        <div class="issue-top"><span class="id">#9</span><h3>Re-check must never turn a failed page green</h3><span class="chip">Found while fixing</span></div>
+        <dl class="rows">
+          <dt>Was</dt><dd>This risk appeared when Re-check became an in-place re-verification (#21). If the server is restored while a tampered page is still open, a fresh check would pass even though the tampered code already ran in that page.</dd>
+          <dt>Changed</dt><dd>A failed verdict is sticky in both scripts. Only a reload clears it.</dd>
+          <dt>Proof</dt><dd class="proof">e2e: “re-check after restoring the server keeps a failed page blocked”</dd>
+        </dl>
+      </article>
+
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <h2>False alarms and wasted work</h2>
+      <p>These would have shown a red banner, or kept re-hashing the whole bundle, on real dApps the demo doesn't resemble.</p>
+    </div>
+    <div class="issues">
+
+      <article class="issue sev-high">
+        <div class="issue-top"><span class="id">#10</span><h3><code>*.eth.limo</code> sites without a record went red</h3><span class="chip">High</span></div>
+        <dl class="rows">
+          <dt>Was</dt><dd>Any <code>*.eth.limo</code>/<code>*.eth.link</code> site that never adopted WebSeal showed “Blocked”, a red banner, and refused signing.</dd>
+          <dt>Changed</dt><dd>The ENS lookup now reports when it succeeded but found no record. A name derived from the host with no record is treated as an unknown site (grey), and the popup explains why. A lookup that fails outright still fails closed, since the site may have a record.</dd>
+          <dt>Proof</dt><dd class="proof">e2e (live Sepolia RPC): “derived *.eth.limo name without a record is unknown, not failed”, “…: no banner”</dd>
+        </dl>
+        <div class="files"><code>extension/src/ens.ts</code> · <code>background.ts</code> · <code>popup.ts</code></div>
+      </article>
+
+      <article class="issue sev-high">
+        <div class="issue-top"><span class="id">#11</span><h3>Single-page-app routes went red</h3><span class="chip">High</span></div>
+        <dl class="rows">
+          <dt>Was</dt><dd>The current URL path was checked as a file. After <code>pushState('/dashboard')</code>, the next check found <code>/dashboard</code> missing from the manifest. Opening a deep link directly failed the same way.</dd>
+          <dt>Changed</dt><dd>New core function <code>verifyDocument</code>: the document is checked by the URL it was originally loaded from (saved when the page starts), and a route that isn't in the manifest passes when its HTML is byte-identical to a page in the release.</dd>
+          <dt>Proof</dt><dd class="proof">unit test “verifyDocument accepts client-side routes only when the HTML is a release page”; e2e “client-side route change (pushState) stays ✓”</dd>
+        </dl>
+        <div class="files"><code>core/src/index.ts</code> · <code>content.ts</code></div>
+      </article>
+
+      <article class="issue sev-high">
+        <div class="issue-top"><span class="id">#12</span><h3>Every network request re-verified the whole page</h3><span class="chip">High</span></div>
+        <dl class="rows">
+          <dt>Was</dt><dd>The performance observer fired for every resource, including <code>fetch</code>, so 10 page fetches caused 10 full re-fetch-and-re-hash runs. A dApp polling its RPC would never stop hashing.</dd>
+          <dt>Changed</dt><dd>Both observers now react only to new scripts and stylesheets. Verification is incremental: only files not already checked are fetched and hashed.</dd>
+          <dt>Proof</dt><dd class="proof">e2e: “ordinary fetches (RPC polling) do not trigger re-verification”</dd>
+        </dl>
+      </article>
+
+      <article class="issue sev-found">
+        <div class="issue-top"><span class="id">#13</span><h3>Clean plain-HTTP sites went red</h3><span class="chip">Found while fixing</span></div>
+        <dl class="rows">
+          <dt>Was</dt><dd>Web Crypto exists only in secure contexts, so on an <code>http://</code> host other than localhost the hashing threw and the page failed.</dd>
+          <dt>Changed</dt><dd>Core falls back to a small pure-JS SHA-256 when <code>crypto.subtle</code> is missing. A unit test checks it against Web Crypto at every padding-boundary length and on 100 KB of input.</dd>
+          <dt>Proof</dt><dd class="proof">unit test “JS SHA-256 fallback matches Web Crypto…”; e2e “plain-http (insecure context) clean site verifies”</dd>
+        </dl>
+      </article>
+
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <h2>Reliability, CLI and release</h2>
+    </div>
+    <div class="issues">
+
+      <article class="issue sev-med">
+        <div class="issue-top"><span class="id">#14</span><h3>Popup forgot the verdict after about 30 seconds idle</h3><span class="chip">Medium</span></div>
+        <dl class="rows">
+          <dt>Was</dt><dd>Per-tab results lived in the service worker's memory. After Chrome stopped the worker, the badge still showed ✓ but the popup said “No trust anchor for this site”.</dd>
+          <dt>Changed</dt><dd>Per-tab state is stored in <code>chrome.storage.session</code>, which content scripts can't read, and is cleared when the tab closes.</dd>
+          <dt>Proof</dt><dd class="proof">e2e: “popup keeps the verdict after the service worker restarts”</dd>
+        </dl>
+      </article>
+
+      <article class="issue sev-med">
+        <div class="issue-top"><span class="id">#15</span><h3>The CLI ignored the <code>webseal.&lt;name&gt;</code> fallback</h3><span class="chip">Medium</span></div>
+        <dl class="rows">
+          <dt>Was</dt><dd>The extension fell back to the subname but <code>verify --name</code> didn't, so the limited-rights CI key setup would fail in the CLI.</dd>
+          <dt>Changed</dt><dd><code>record</code> and <code>verify --name</code> use the same name-then-subname lookup and print which name the record came from.</dd>
+          <dt>Proof</dt><dd class="proof partial">Run by hand: the error names both lookups. The case where a record exists only on the subname hasn't been seen live.</dd>
+        </dl>
+        <div class="files"><code>cli/src/ens.ts</code> · <code>cli/src/index.ts</code></div>
+      </article>
+
+      <article class="issue sev-med">
+        <div class="issue-top"><span class="id">#16</span><h3>The release workflow anchored builds that weren't deployed</h3><span class="chip">Medium</span></div>
+        <dl class="rows">
+          <dt>Was</dt><dd>Every push to <code>main</code> wrote the new hash to ENS, but the workflow only uploaded a CI artifact. Everyone who had pinned the name would see red, and every push cost gas.</dd>
+          <dt>Changed</dt><dd>New order: build, write the manifest (hash captured), deploy (placeholder), then <code>verify</code> the live site against the new hash, retrying for up to five minutes. Only after that does it publish. Anchoring needs the <code>WEBSEAL_SITE_URL</code> variable, runs are serialized, and <code>publish</code> skips the transaction when the record already has the value.</dd>
+          <dt>Proof</dt><dd class="proof partial">The YAML parses, and the hash extraction was tested against real CLI output. It hasn't run on GitHub yet.</dd>
+        </dl>
+        <div class="files"><code>.github/workflows/release.yml</code></div>
+      </article>
+
+      <article class="issue sev-med">
+        <div class="issue-top"><span class="id">#17</span><h3>The banner could be removed, and its HTML wasn't escaped</h3><span class="chip">Medium</span></div>
+        <dl class="rows">
+          <dt>Was</dt><dd>Page code could delete the banner. File paths went into its HTML unescaped.</dd>
+          <dt>Changed</dt><dd>Text is escaped, the banner's inline styles are marked <code>!important</code>, and it re-attaches itself when removed. The badge stays authoritative either way.</dd>
+          <dt>Proof</dt><dd class="proof">e2e: “banner comes back after page code removes it”</dd>
+        </dl>
+      </article>
+
+      <article class="issue sev-low">
+        <div class="issue-top"><span class="id">#18</span><h3>“Pin current manifest hash” could pin an error page</h3><span class="chip">Low</span></div>
+        <dl class="rows">
+          <dt>Was</dt><dd>When there was no report yet, it fetched over hard-coded <code>http://</code>, didn't check for a 404, and pinned whatever came back.</dd>
+          <dt>Changed</dt><dd>It uses the tab's own origin, requires an OK response, and checks that the body parses as a manifest before pinning.</dd>
+          <dt>Proof</dt><dd class="proof partial">Typechecked. This fallback path isn't covered by a test.</dd>
+        </dl>
+      </article>
+
+      <article class="issue sev-low">
+        <div class="issue-top"><span class="id">#19</span><h3>“Pin ENS name” only accepted <code>.eth</code></h3><span class="chip">Low</span></div>
+        <dl class="rows">
+          <dt>Was</dt><dd>DNS names imported into ENS (such as <code>example.com</code>) were rejected.</dd>
+          <dt>Changed</dt><dd>Any dotted name is accepted. A name that doesn't resolve shows up as a lookup error.</dd>
+          <dt>Proof</dt><dd class="proof partial">Typechecked, not covered by a test.</dd>
+        </dl>
+      </article>
+
+      <article class="issue sev-low">
+        <div class="issue-top"><span class="id">#20</span><h3>CLI <code>publish</code> didn't confirm what it wrote</h3><span class="chip">Low</span></div>
+        <dl class="rows">
+          <dt>Was</dt><dd>It didn't read the record back, didn't check the transaction status, and would send a transaction to a name with no resolver. <code>verify --expect</code> accepted any string.</dd>
+          <dt>Changed</dt><dd><code>publish</code> skips the transaction when nothing changed, errors on a failed transaction or a missing resolver, and reads the record back. <code>--expect</code> must be 64 hex characters.</dd>
+          <dt>Proof</dt><dd class="proof partial">Run by hand: the <code>--expect</code> check and <code>publish --dry-run</code>. A real publish needs a key and Sepolia ETH.</dd>
+        </dl>
+      </article>
+
+      <article class="issue sev-low">
+        <div class="issue-top"><span class="id">#21</span><h3>Re-check just reloaded the page</h3><span class="chip">Low</span></div>
+        <dl class="rows">
+          <dt>Was</dt><dd>The content script's <code>recheck</code> handler was unused, and the popup button reloaded the tab.</dd>
+          <dt>Changed</dt><dd>Re-check now re-verifies in place: fresh ENS lookup (skipping the cache), fresh manifest, every file again. It falls back to a reload when the tab has no verifier. Combined with #9, it can't clear a failure.</dd>
+          <dt>Proof</dt><dd class="proof">e2e: “re-check in place on a clean page stays verified, without a reload”</dd>
+        </dl>
+      </article>
+
+      <article class="issue sev-low">
+        <div class="issue-top"><span class="id">#22</span><h3>Setup: Node 22 and a Windows path bug</h3><span class="chip">Low</span></div>
+        <dl class="rows">
+          <dt>Was</dt><dd>The machine had Node 20, so <code>pnpm test</code> couldn't run. Both e2e scripts built the repo path as <code>Z:\Z:\…</code> on Windows.</dd>
+          <dt>Changed</dt><dd>Installed Node 22.23.4 and pnpm 10.28.0 through nvm. The e2e scripts now use <code>fileURLToPath</code>.</dd>
+          <dt>Proof</dt><dd class="proof">All suites run on this Windows machine.</dd>
+        </dl>
+      </article>
+
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <h2>Round 2: the open items, the demo recorder</h2>
+      <p>Each round-1 “remaining issue” that could be done from this machine, plus what the new demo recorder exposed.</p>
+    </div>
+    <div class="issues">
+
+      <article class="issue sev-crit">
+        <div class="issue-top"><span class="id">#23</span><h3>A tampered same-origin frame could use a clean page's wallet before it was checked</h3><span class="chip">Critical</span></div>
+        <dl class="rows">
+          <dt>Was</dt><dd>A frame's own scripts run before its verification finishes (load plus 150 ms). In that gap, a tampered frame inside a clean page could call <code>parent.ethereum</code> while the page was still green.</dd>
+          <dt>Changed</dt><dd>WebSeal's scripts in same-origin frames share one isolated world, so a frame now registers with its top page (or its opener) synchronously at <code>document_start</code>, before any of its own scripts run. The top page then holds signing until the frame reports. <code>about:blank</code>, <code>srcdoc</code> and <code>blob:</code> frames only contain code the page itself wrote, so they don't hold signing. A frame that never finishes loading stops holding after 5 s.</dd>
+          <dt>Proof</dt><dd class="proof">e2e: “a tampered same-origin frame using the page wallet at once” (blocked, page turns ✗), stable across 3 full runs and 8 repeats of the scenario</dd>
+        </dl>
+        <div class="files"><code>content.ts</code></div>
+      </article>
+
+      <article class="issue sev-found">
+        <div class="issue-top"><span class="id">#24</span><h3>A frame could plant code in the page and delete itself before being checked</h3><span class="chip">Found while fixing</span></div>
+        <dl class="rows">
+          <dt>Was</dt><dd>With #23 in place, a frame could set a timer in the top page and remove itself while still unverified. Removing an unverified frame would have dropped its hold, and the planted call would later run on a green page.</dd>
+          <dt>Changed</dt><dd>A frame or window that goes away while still unverified fails the page: “went away before it could be verified”.</dd>
+          <dt>Proof</dt><dd class="proof">e2e: “a frame that plants code in the page and removes itself” (the wallet never sees the transaction, page turns ✗)</dd>
+        </dl>
+      </article>
+
+      <article class="issue sev-found">
+        <div class="issue-top"><span class="id">#25</span><h3>No answer from the background worker counted as “no anchor”</h3><span class="chip">Found while fixing</span></div>
+        <dl class="rows">
+          <dt>Was</dt><dd>If the content script's message to the service worker failed, the missing answer was read as “this site has no anchor”, which means unknown and signing allowed. That fails open on an anchored site, and a frame that hit this would release its page's hold.</dd>
+          <dt>Changed</dt><dd>Only an explicit answer counts. The request is retried four times, and if the worker still doesn't answer the page fails with “could not reach its background worker”.</dd>
+          <dt>Proof</dt><dd class="proof partial">Code review and typecheck. There's no test that makes the worker unreachable.</dd>
+        </dl>
+      </article>
+
+      <article class="issue sev-high">
+        <div class="issue-top"><span class="id">#26</span><h3>Wallet-specific globals reached the raw wallet</h3><span class="chip">High</span></div>
+        <dl class="rows">
+          <dt>Was</dt><dd><code>window.phantom.ethereum</code>, <code>window.coinbaseWalletExtension</code> and similar globals skipped the wrapper.</dd>
+          <dt>Changed</dt><dd>17 known wallet globals get the same accessor as <code>window.ethereum</code>. Inside a namespace object, any property that looks like an EIP-1193 provider comes back wrapped.</dd>
+          <dt>Proof</dt><dd class="proof">e2e with a wallet installed as an extension that exposes both globals: “tampered page blocked via phantom”, “… via coinbase”</dd>
+        </dl>
+        <div class="files"><code>main.ts</code> · <code>scripts/fixtures/fake-wallet</code></div>
+      </article>
+
+      <article class="issue sev-med">
+        <div class="issue-top"><span class="id">#27</span><h3>Real wallets and libraries could break on the stricter wrapper</h3><span class="chip">Medium</span></div>
+        <dl class="rows">
+          <dt>Was</dt><dd>The wrapper refused every <code>defineProperty</code> on the provider, and wrapping a frozen provider's methods would make every property access throw.</dd>
+          <dt>Changed</dt><dd>Plain data values may be defined (functions and accessors still may not). Frozen methods are returned as they are; they run with the wrapper as <code>this</code>, so their internal calls still go through the gate.</dd>
+          <dt>Proof</dt><dd class="proof partial">All suites pass. Real MetaMask still hasn't run against it (see below).</dd>
+        </dl>
+      </article>
+
+      <article class="issue sev-med">
+        <div class="issue-top"><span class="id">#28</span><h3>Red between the deploy and the ENS transaction</h3><span class="chip">Medium</span></div>
+        <dl class="rows">
+          <dt>Was</dt><dd>A single-hash record means visitors see red from the moment the CDN serves the new build until the ENS transaction confirms.</dd>
+          <dt>Changed</dt><dd>A record may list two hashes, <code>v1:sha256:&lt;new&gt;,&lt;old&gt;</code>. <code>webseal publish --keep-current</code> adds the new hash before the deploy, and the workflow pre-announces, deploys, checks the live site, then finalizes. The extension and <code>verify</code> accept either hash.</dd>
+          <dt>Proof</dt><dd class="proof">unit test for the record format; CLI e2e and browser e2e “rollout record with two hashes accepts the served build”. The workflow's YAML parses; it hasn't run on GitHub.</dd>
+        </dl>
+        <div class="files"><code>core</code> · <code>cli</code> · <code>extension</code> · <code>release.yml</code></div>
+      </article>
+
+      <article class="issue sev-med">
+        <div class="issue-top"><span class="id">#29</span><h3>ENS code paths could only be tested with a key and a live chain</h3><span class="chip">Medium</span></div>
+        <dl class="rows">
+          <dt>Was</dt><dd>Pinning by name, the subname fallback, and the record format were only exercised live, and there's no record on chain yet.</dd>
+          <dt>Changed</dt><dd>New fixture <code>scripts/fixtures/fake-ens-rpc.mjs</code>: a local JSON-RPC server that answers ENS Universal Resolver lookups from a map, so the real viem lookup code runs end to end offline.</dd>
+          <dt>Proof</dt><dd class="proof">CLI e2e: subname-only record, rollout record, stale record, no record. Browser e2e: pin by name ✓, popup shows the ENS anchor, stale record ✗.</dd>
+        </dl>
+      </article>
+
+      <article class="issue sev-med">
+        <div class="issue-top"><span class="id">#30</span><h3>WebAssembly and service workers weren't checked</h3><span class="chip">Medium</span></div>
+        <dl class="rows">
+          <dt>Was</dt><dd><code>.wasm</code> fetched at runtime and service-worker scripts (which can rewrite every response) were never hashed.</dd>
+          <dt>Changed</dt><dd>Fetched <code>.wasm</code> files count as code. The scripts of the origin's service worker registrations are verified, and new registrations are picked up.</dd>
+          <dt>Proof</dt><dd class="proof">e2e: “unlisted WebAssembly fetched at runtime flips to ✗”, “unlisted service worker registered by the page flips to ✗”</dd>
+        </dl>
+      </article>
+
+      <article class="issue sev-low">
+        <div class="issue-top"><span class="id">#31</span><h3>One RPC for ENS lookups</h3><span class="chip">Low</span></div>
+        <dl class="rows">
+          <dt>Was</dt><dd>If publicnode was down, every lookup failed. Because a failed lookup fails closed, <code>*.eth.limo</code> sites went red.</dd>
+          <dt>Changed</dt><dd>Without a custom RPC, reads go through viem's fallback transport over public RPCs I checked from here (publicnode, then 1rpc.io for Sepolia, plus drpc for mainnet). A custom RPC is used on its own. CLI transactions go to one RPC only.</dd>
+          <dt>Proof</dt><dd class="proof partial">Live reads work. The switch to the second RPC wasn't forced in a test.</dd>
+        </dl>
+      </article>
+
+      <article class="issue sev-high">
+        <div class="issue-top"><span class="id">#32</span><h3><code>pnpm demo</code> opened Chrome without WebSeal</h3><span class="chip">High</span></div>
+        <dl class="rows">
+          <dt>Was</dt><dd>Google Chrome 137 and later ignore <code>--load-extension</code>. I confirmed it on this machine's Chrome 156: the extension doesn't load, while Playwright's Chromium loads it.</dd>
+          <dt>Changed</dt><dd>The launcher prefers Playwright's Chromium, which is now a dev dependency pinned to 1.49.1. If it falls back to Google Chrome, it prints the one-time Load unpacked steps.</dd>
+          <dt>Proof</dt><dd class="proof partial">Checked which browsers load the extension; the launcher itself was syntax-checked, not run here.</dd>
+        </dl>
+        <div class="files"><code>scripts/demo.mjs</code> · <code>package.json</code></div>
+      </article>
+
+      <article class="issue sev-high">
+        <div class="issue-top"><span class="id">#33</span><h3>The tamper demo was blocked by viem, not by WebSeal</h3><span class="chip">Found by the recorder</span></div>
+        <dl class="rows">
+          <dt>Was</dt><dd>The attacker address <code>0xBAD0…0bad</code> has mixed case, so it fails the EIP-55 checksum, and viem refused the send (<code>Address … is invalid</code>) before the wallet or WebSeal saw it. A demo video would have credited WebSeal for viem's check.</dd>
+          <dt>Changed</dt><dd>The attacker address is all lower case, so the transaction really goes to the wallet gate. Tamper and restore detect either spelling.</dd>
+          <dt>Proof</dt><dd class="proof">new e2e: “tampered site: the dApp's Send button is refused by WebSeal”</dd>
+        </dl>
+        <div class="files"><code>apps/demo/tamper.mjs</code> · <code>restore.mjs</code></div>
+      </article>
+
+      <article class="issue sev-med">
+        <div class="issue-top"><span class="id">#34</span><h3>dApps using viem show a generic error instead of WebSeal's</h3><span class="chip">Found by the recorder</span></div>
+        <dl class="rows">
+          <dt>Was</dt><dd>viem replaces the message of a code-4100 error with “The requested method and/or account has not been authorized by the user”. WebSeal's explanation survives only as the error's cause.</dd>
+          <dt>Changed</dt><dd>The demo dApp shows the root cause, so its log reads “WebSeal blocked this request…”. Other dApps will show their library's text, and the red banner and popup carry the explanation there.</dd>
+          <dt>Proof</dt><dd class="proof">e2e as #33</dd>
+        </dl>
+      </article>
+
+      <article class="issue sev-low">
+        <div class="issue-top"><span class="id">#35</span><h3>A demo video Claude can record by itself</h3><span class="chip">New</span></div>
+        <dl class="rows">
+          <dt>Was</dt><dd>The demo could only be recorded by hand.</dd>
+          <dt>Changed</dt><dd><code>pnpm demo:record</code> drives Chromium with WebSeal and a test wallet through the whole story and screenshots every page about 10 times a second. A local editing page (<code>scripts/demo-cut.html</code>) plays the clips with captions and terminal cards showing the real command output, and Playwright records that page as the final video. Captions are written from what the page's log and the wallet report, and the recorder warns if the tampered send failed for any other reason. A MetaMask mode exists (one-time <code>--setup</code>, then <code>--metamask</code>).</dd>
+          <dt>Proof</dt><dd class="proof">The output <code>docs/demo/webseal-demo.webm</code> (68 s, 1280x720) was checked frame by frame with ffmpeg: verified page with the popup, the send reaching the wallet, the tamper output, the red banner with the changed file, “WebSeal blocked this request”, restore, and the Bybit card.</dd>
+        </dl>
+        <div class="files"><code>scripts/record-demo.mjs</code> · <code>scripts/demo-cut.html</code></div>
+      </article>
+
+      <article class="issue sev-low">
+        <div class="issue-top"><span class="id">#36</span><h3>Housekeeping</h3><span class="chip">Low</span></div>
+        <dl class="rows">
+          <dt>Changed</dt><dd>Playwright is a dev dependency, with <code>pnpm e2e:browser</code> and <code>pnpm demo:record</code> scripts. <code>docs/screenshots</code> was regenerated by the browser suite. <code>.gitignore</code> covers the recorder's scratch folders and MetaMask profile. A joined README bullet from round 1 was split back apart.</dd>
+        </dl>
+      </article>
+
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <h2>Remaining issues</h2>
+      <p>Not fixed, or not verifiable from this machine, as of round 2. Ordered by what matters most for the demo and the security claim.</p>
+    </div>
+    <ul class="remaining">
+      <li>
+        <span class="tag">Needs you · before the demo</span>
+        <strong>Real MetaMask hasn't run against this build.</strong>
+        <span class="why">I downloaded MetaMask's official Chrome build (its SHA-256 matched GitHub's), but the permission check blocked me from running a third-party wallet's code in automation. The manual test and the recorder's MetaMask mode are written but have not been run.</span>
+        <span class="next">Either <code>docs/TESTING.md</code> §1 by hand, or <code>pnpm demo:record --setup --metamask &lt;dir&gt; --profile .demo-profile</code> once, then <code>MM_PASSWORD=… pnpm demo:record --metamask &lt;dir&gt; --profile .demo-profile</code> (§5).</span>
+      </li>
+      <li>
+        <span class="tag">Design limit</span>
+        <strong>Wallet internals, unlisted wallet globals, non-EVM providers.</strong>
+        <span class="why">A wallet whose methods return internal objects, or that exposes a global not on the list of 17, can still be reached unwrapped. Solana-style providers aren't gated. Any gate that lives in the page's world has this limit.</span>
+        <span class="next">Lasting fix: the wallet asks WebSeal for the verdict (a wallet integration or Snap).</span>
+      </li>
+      <li>
+        <span class="tag">Edge cases</span>
+        <strong>Frames.</strong>
+        <span class="why">A same-origin frame nested under a cross-origin parent links to the top page only. A legit page that removes a same-origin URL iframe before it's verified now fails (deliberate, see #24). A frame that never finishes loading holds signing for up to 5 s.</span>
+        <span class="next">Watch for false alarms on real dApps that use same-origin iframes.</span>
+      </li>
+      <li>
+        <span class="tag">Needs a key and Sepolia ETH</span>
+        <strong>Live ENS publish, the subname CI key, and the workflow on GitHub.</strong>
+        <span class="why">Every lookup path now runs against the fake ENS RPC, and live reads work. Writing, read-back, <code>--keep-current</code> on a real record, and the two-transaction workflow have not run on chain.</span>
+        <span class="next"><code>docs/TESTING.md</code> §2–4, then record with <code>--ens-name</code>.</span>
+      </li>
+      <li>
+        <span class="tag">Cost</span>
+        <strong>Two ENS transactions per release.</strong>
+        <span class="why">The rollout record costs a pre-announce and a finalize transaction. That's cheap on Sepolia; on mainnet, weigh it against a short red window.</span>
+        <span class="next">Skip the pre-announce step if the window is acceptable.</span>
+      </li>
+      <li>
+        <span class="tag">Unchanged from README</span>
+        <strong>Known limitations of the approach.</strong>
+        <span class="why">A server that serves different bytes to the re-fetch, web workers' own imports, WebAssembly fetched from a URL not ending in <code>.wasm</code>, trust in the RPC, and a poisoned source repo.</span>
+        <span class="next">Hash real response bodies via the debugger API, read ENS through a light client.</span>
+      </li>
+      <li>
+        <span class="tag">Housekeeping</span>
+        <strong>Video format, Playwright version, git.</strong>
+        <span class="why">The video is WebM (VP8). YouTube takes it; convert to MP4 if a form insists. The test wallet in the automatic video has no confirmation window, and the caption says so. Playwright is pinned to 1.49.1 to match the Chromium on this machine. The project isn't under git.</span>
+        <span class="next">Run <code>git init</code> before pushing (TESTING §4). Upgrade Playwright together with <code>npx playwright install chromium</code>.</span>
+      </li>
+    </ul>
+  </section>
+
+  <section>
+    <div class="section-head"><h2>Re-run everything</h2></div>
+    <div class="cmds"><pre><span class="c"># Node 22 (nvm use 22.23.4), pnpm 10.28.0</span>
+pnpm install
+pnpm build
+pnpm typecheck
+pnpm test                       <span class="c"># 10 unit tests</span>
+pnpm e2e                        <span class="c"># 8 CLI checks</span>
+pnpm e2e:browser                <span class="c"># 60 browser checks; npx playwright install chromium once</span>
+pnpm demo:record                <span class="c"># docs/demo/webseal-demo.webm</span></pre></div>
+  </section>
+
+  <footer>
+    <span>Files changed: <code>packages/extension/src/{main,content,background,ens,popup,types}.ts</code>, new <code>channel.ts</code>, <code>packages/extension/manifest.json</code>, <code>packages/core/src/index.ts</code> and its tests, <code>packages/cli/src/{index,ens}.ts</code>, <code>.github/workflows/release.yml</code>, <code>scripts/e2e.mjs</code>, <code>scripts/e2e-browser.mjs</code>, <code>scripts/demo.mjs</code>, new <code>scripts/record-demo.mjs</code> and <code>scripts/demo-cut.html</code>, new fixtures <code>scripts/fixtures/fake-wallet/</code> and <code>fake-ens-rpc.mjs</code>, <code>apps/demo/{src/main.ts,tamper.mjs,restore.mjs}</code>, <code>package.json</code>, <code>pnpm-lock.yaml</code>, <code>.gitignore</code>, <code>README.md</code>, <code>docs/HANDOFF.md</code>, <code>docs/TESTING.md</code>, <code>docs/screenshots/</code>, new <code>docs/demo/webseal-demo.webm</code>.</span>
+    <span>A backup of the source from before these changes is in the session scratchpad as <code>ethmumbai-before-fixes.tar</code>.</span>
+  </footer>
+</div>

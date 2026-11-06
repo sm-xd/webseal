@@ -6,11 +6,11 @@ These run in CI and in any container with Node 22. No wallet, no chain, no human
 
 | Suite | Command | Covers |
 |---|---|---|
-| Core unit tests | `pnpm test` | canonical JSON, hashing, record parsing, path normalization, verify logic, inline scripts |
-| CLI end-to-end | `pnpm e2e` | build manifest, serve, verify passes, tamper, verify fails naming the file, wrong anchor fails, restore passes |
-| Browser end-to-end | `node scripts/e2e-browser.mjs` | extension in Chromium: grey/green/red states, signing blocked on red, reads still allowed, popup names the file, forged status message from page JS does not unblock, script injected after load flips to red |
+| Core unit tests | `pnpm test` | canonical JSON, hashing (Web Crypto and the JS fallback), record parsing, path normalization, verify logic, inline scripts, document/SPA-route check |
+| CLI end-to-end | `pnpm e2e` | 8 checks: build manifest, serve, verify passes, tamper, verify fails naming the file, wrong anchor fails, restore passes; ENS anchor through a local fake ENS RPC (record only on `webseal.<name>`, two-hash rollout record, stale record, no record) |
+| Browser end-to-end | `pnpm e2e:browser` | extension in Chromium, 60 checks: the dApp's own Send button reaches the wallet on the clean page and is refused by WebSeal on the tampered one; pinning by ENS name through the fake ENS RPC; a tampered same-origin frame and a frame that plants code and removes itself; unlisted WebAssembly and service workers; wallet globals (`phantom`, `coinbaseWalletExtension`) with a wallet installed as an extension; plus grey/green/red states, signing blocked on red, reads still allowed, popup names the file, late injection flips to red, 12 bypass attempts by hostile page code, frames and opened windows, re-check semantics, no false alarms (SPA routes, `*.eth.limo` without a record, plain http), popup survives a service-worker restart |
 
-The browser suite uses a fake EIP-1193 wallet injected by the test, not MetaMask.
+The browser suite uses a fake EIP-1193 wallet injected by the test, plus a fake wallet *extension* (`scripts/fixtures/fake-wallet`) injected the way MetaMask-style wallets are, not MetaMask itself. The `*.eth.limo` check needs the Sepolia RPC and prints SKIP when it is unreachable. Playwright is not a repo dependency: install it globally (or anywhere and point `NODE_PATH` at it), matching a Chromium build you have.
 
 ## Needs a person
 
@@ -23,7 +23,7 @@ pnpm install
 pnpm demo
 ```
 
-`pnpm demo` builds, writes the manifest, serves http://localhost:4173, and opens Chrome with the extension loaded in a fresh profile under `.chrome-profile/`. The first time, install MetaMask into that profile from the Web Store, import or create a test wallet, and switch it to Sepolia. The profile persists.
+`pnpm demo` builds, writes the manifest, serves http://localhost:4173, and opens Chromium with the extension loaded in a fresh profile under `.chrome-profile/`. It uses Playwright's Chromium (`npx playwright install chromium`) because Google Chrome 137+ ignores `--load-extension`; if it falls back to Google Chrome, load `packages/extension/dist` once via chrome://extensions → Developer mode → Load unpacked. The first time, install MetaMask into that profile from the Web Store, import or create a test wallet, and switch it to Sepolia. The profile persists.
 
 Then:
 
@@ -77,9 +77,31 @@ git push -u origin main
 
 Set repository variables `WEBSEAL_ENS_NAME` and `WEBSEAL_CHAIN`, and the secret `WEBSEAL_CI_KEY`, and the release workflow anchors every push to `main`.
 
-### 5. Record the demo (30 min)
+### 5. Record the demo
 
-Suggested order, about three minutes:
+**Automatic (no human, test wallet), about 70 seconds:**
+
+```bash
+pnpm build
+pnpm demo:record          # -> docs/demo/webseal-demo.webm
+```
+
+The recorder drives Chromium with WebSeal and the test wallet extension (`scripts/fixtures/fake-wallet`), captures every page, and assembles a captioned 1280x720 video: title, the `webseal build` output, the clean page verified with the popup, Send reaching the wallet, the real `pnpm demo:tamper` output, the reload with the red banner and the popup naming the changed file, Send refused with "WebSeal blocked this request", restore, and the Bybit card. Captions come from what actually happened (the dApp's log, the requests the wallet received); if the tampered send fails for any other reason the recorder prints a WARNING and the caption says so. The test wallet has no confirmation window, which the caption states.
+
+**With real MetaMask** (not yet run end to end; the recorder never clicks inside MetaMask):
+
+```bash
+# once: a visible Chromium with WebSeal + MetaMask in its own profile
+pnpm demo:record --setup --metamask <unpacked MetaMask folder> --profile .demo-profile
+#   create or import a throwaway wallet (no funds needed), switch to Sepolia,
+#   press "Connect wallet" in the demo tab and approve, close the window
+# then, every time:
+MM_PASSWORD=<that password> pnpm demo:record --metamask <unpacked MetaMask folder> --profile .demo-profile
+```
+
+Get the unpacked folder from MetaMask's GitHub releases (`metamask-chrome-<version>.zip`, check its SHA-256 against the release page, unzip). The recorder unlocks MetaMask, records its confirmation window when it opens on the clean page and closes it (a rejection), and on the tampered page records that no MetaMask window opens. Add `--ens-name yourname.eth` once §2 is done to pin the real ENS name instead of the manifest hash.
+
+**By hand**, the suggested order, about three minutes:
 
 1. Page open, badge green, popup showing files verified against the ENS name.
 2. Terminal beside it: `pnpm demo:tamper`. Reload.

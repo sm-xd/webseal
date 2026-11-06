@@ -13,30 +13,32 @@ Trust chain: CI hashes every build file into a manifest, and the manifest's SHA-
 - `packages/core/src/index.ts`: manifest format, canonical JSON, sha256, `normalizePath`, `verifyFiles`, `verifyInline`, `extractInlineScripts`, `SIGNING_METHODS`. Tests in `packages/core/test`.
 - `packages/cli`: `webseal build|publish|record|verify`. Bundled to `packages/cli/dist/webseal.js`. ENS read/write in `src/ens.ts` (viem `getEnsText`, PublicResolver `setText`). Chains: `sepolia` (default), `mainnet`.
 - `packages/extension` (Manifest V3, loads from `packages/extension/dist`):
-  - `src/main.ts`: MAIN-world script at document_start. Wraps `window.ethereum` via accessor + Proxy and re-announces EIP-6963 providers wrapped. Signing methods wait for a verdict (20 s timeout) and reject with code 4100 on failure. Verdict messages are authenticated by a hash chain `sha256(token:seq)`; the token is passed from main.ts to content.ts through a DOM attribute read and deleted before page scripts run.
-  - `src/content.ts`: isolated-world verifier. Gets the anchor from the service worker, verifies after `load`, re-verifies on injected scripts/links (MutationObserver + PerformanceObserver), posts status to main.ts, shows a sticky red banner in a closed shadow root.
-  - `src/background.ts`: anchor lookup (pinned ENS name, pinned hash, or derived from `*.eth.limo`/`*.eth.link` hosts), ENS resolution with fallback to `webseal.<name>`, per-tab badge (✓ green, ✗ red, … pending, blank unknown).
+  - `src/main.ts`: MAIN-world script at document_start, in every frame. Wraps `window.ethereum` via accessor + Proxy, `ethereum.providers`, and re-announces EIP-6963 providers wrapped. Signing methods wait for a verdict (20 s timeout) and reject with code 4100 on failure. Written against a hostile page: only built-ins captured before page code ran, request args read once and copied, provider methods cannot be replaced, the raw provider never leaks (callbacks get the proxy as `this`, `on()` returns the proxy), `fail` is sticky until reload. The verdict arrives on a private channel (`src/channel.ts`): a detached `<webseal-channel>` element that content.ts removes from the document before any page script runs; the status is the event type.
+  - `src/content.ts`: isolated-world verifier, every frame. Gets the anchor from the service worker, verifies after `load` (the document by its original URL, so SPA routes pass when the HTML equals a release page), re-verifies incrementally on new scripts/links only (fetch/XHR ignored). Same-origin subframes (incl. about:blank/srcdoc, compared by `window.origin`) and windows opened by a same-origin page take the worse of their own and the related page's verdict; a failure in one fails the other. Popup Re-check re-verifies in place but never turns a failed page green. Red banner in a closed shadow root, escaped, re-attached if removed.
+  - `src/background.ts`: anchor lookup (pinned ENS name, pinned hash, or derived from `*.eth.limo`/`*.eth.link` hosts; a derived name with no record is unknown, a failed lookup fails closed), ENS resolution with fallback to `webseal.<name>`, per-tab state in `chrome.storage.session` (survives service-worker restarts), verdict broadcast to subframes and opened windows, per-tab badge (✓ green, ✗ red, … pending, blank unknown).
   - `src/popup.*`: status, per-file list, "Pin ENS name", "Pin current manifest hash" (dev mode), Unpin, Re-check, chain/RPC settings. `?tab=<id>` opens it as a page for a given tab.
 - `apps/demo`: Vite dApp "Acme Treasury" (connect, send 0.01 ETH on Sepolia, sign message). `server.mjs` static server on 4173. `tamper.mjs` swaps the treasury address constant inside the served JS only (UI still shows the right address). `restore.mjs` undoes it, only when actually tampered.
-- `scripts/e2e.mjs`: CLI end-to-end. `scripts/e2e-browser.mjs`: Playwright/Chromium with the extension loaded and a fake EIP-1193 wallet. `scripts/demo.mjs`: `pnpm demo`, builds, writes manifest, serves, launches Chrome with the extension in `.chrome-profile/`.
+- `scripts/e2e.mjs`: CLI end-to-end. `scripts/e2e-browser.mjs`: Playwright/Chromium with the extension loaded, an injected fake EIP-1193 wallet, and a fake wallet extension (`scripts/fixtures/fake-wallet`) for realistic injection order and frames. `scripts/demo.mjs`: `pnpm demo`, builds, writes manifest, serves, launches Chrome with the extension in `.chrome-profile/`.
 - `.github/workflows/release.yml`: build, manifest, anchor on ENS using secret `WEBSEAL_CI_KEY` and vars `WEBSEAL_ENS_NAME`, `WEBSEAL_CHAIN`.
 - `docs/TESTING.md`: full checklist. `docs/screenshots`: clean/tampered page and popup.
 
 ## Status
 
-Passing, run with `pnpm test`, `pnpm e2e`, `node scripts/e2e-browser.mjs`:
+Passing, run with `pnpm test`, `pnpm e2e`, `pnpm e2e:browser` (2026-11-06):
 
-- 8 core unit tests.
-- CLI e2e: clean verifies, tamper fails naming the file, wrong anchor fails on the manifest, restore verifies.
-- Browser e2e, 17 checks: grey/green/red states, signing blocked on red, reads and connect still allowed, popup names the changed file, forged status message from page JS does not unblock, script injected after load flips to red.
+- 10 core unit tests (incl. `verifyDocument` for SPA routes and the pure-JS SHA-256 fallback used on plain-http pages).
+- CLI e2e, 8 checks: clean verifies, tamper fails naming the file, wrong anchor fails on the manifest, restore verifies, and ENS anchoring through a local fake ENS RPC (`scripts/fixtures/fake-ens-rpc.mjs`, the real viem lookup path): record only on `webseal.<name>`, two-hash rollout record, stale record, no record.
+- Browser e2e, 60 checks. Added on 2026-11-06: the dApp's Send button reaches the wallet when clean and is refused by WebSeal when tampered, pinning by ENS name (fake ENS RPC), a tampered same-origin frame and a frame that plants code and removes itself, unlisted WebAssembly and service workers, wallet globals (`phantom`, `coinbaseWalletExtension`). Earlier: the original 17 (grey/green/red, signing blocked on red, reads and connect allowed, popup names the file, forged message, late injection) plus 12 bypass attempts by page code on a tampered page (built-in overrides, forged/replayed verdicts, getter TOCTOU, batched sendAsync, replaced request, leaked `this`, iframes incl. about:blank, opened windows), banner re-attach, re-check never un-fails, no re-verification on fetches, SPA route stays green, re-check in place, `*.eth.limo` without a record is grey, plain-http verifies, popup survives a service-worker stop, and the same attacks with a wallet installed as an extension. See `docs/work_artifacts/` for the review and fix log.
 
 Manually confirmed by the user: real MetaMask connects through the WebSeal wrapper (so extension injection order is fine). The user's first send failed only because MetaMask was on mainnet; the demo now asks the wallet to switch to Sepolia on connect and before sending.
 
+Demo video: `pnpm demo:record` records the whole demo with the test wallet, no human needed, to `docs/demo/webseal-demo.webm` (about 70 s); `--metamask <dir> --profile <dir>` (after a one-time `--setup`) records it with real MetaMask. See `docs/TESTING.md` §5. Two demo bugs it exposed are fixed: the tamper script's attacker address failed the EIP-55 checksum, so viem refused the send before WebSeal or the wallet saw it, and viem replaced WebSeal's error text with its generic code-4100 message (the dApp now shows the root cause).
+
 Not yet exercised anywhere:
 
-1. The real-wallet send on a clean page (MetaMask confirmation should open) and on a tampered page (must be refused with "WebSeal blocked this request" before MetaMask opens).
-2. Live ENS record publish/read on Sepolia (the cloud container's network blocked the RPC host). Code path is `packages/cli/src/ens.ts` and `packages/extension/src/ens.ts`.
-3. The limited-rights CI key pattern: record on subname `webseal.<name>` owned by a throwaway key; the extension already falls back to it.
+1. The MetaMask recording mode (`pnpm demo:record --metamask …`); the real-wallet send on a clean page (MetaMask confirmation should open) and on a tampered page (must be refused with "WebSeal blocked this request" before MetaMask opens). Re-run "connect" too: since the 2026-11-05 hardening the provider proxy refuses method replacement and `defineProperty` and wraps every method, which only the fake wallets have been tested against.
+2. Live ENS record publish on Sepolia (needs a key and Sepolia ETH). Reads now work live: the CLI `record` command and the extension both resolved Sepolia and mainnet names on 2026-11-05. Code path is `packages/cli/src/ens.ts` and `packages/extension/src/ens.ts`.
+3. The limited-rights CI key pattern: record on subname `webseal.<name>` owned by a throwaway key; the extension and now the CLI (`record`, `verify --name`) fall back to it. A positive fallback (record only on the subname) has not been seen live.
 
 ## Known limitations (also in README)
 
@@ -48,8 +50,9 @@ Poisoned source repo is out of scope. The extension re-fetches files to hash the
 pnpm install
 pnpm build
 pnpm test && pnpm e2e
-node scripts/e2e-browser.mjs       # needs playwright + chromium
-pnpm demo                          # builds, serves :4173, opens Chrome with the extension
+pnpm e2e:browser                   # needs a Playwright Chromium: npx playwright install chromium
+pnpm demo                          # builds, serves :4173, opens Chromium with the extension
+pnpm demo:record                   # records the demo video to docs/demo/webseal-demo.webm
 pnpm demo:tamper                   # attack
 pnpm demo:restore                  # undo
 node packages/cli/dist/webseal.js build --dist apps/demo/dist --name <name>.eth
