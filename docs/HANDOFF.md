@@ -40,6 +40,18 @@ Not yet exercised anywhere:
 2. Live ENS record publish on Sepolia (needs a key and Sepolia ETH). Reads now work live: the CLI `record` command and the extension both resolved Sepolia and mainnet names on 2026-11-05. Code path is `packages/cli/src/ens.ts` and `packages/extension/src/ens.ts`.
 3. The limited-rights CI key pattern: record on subname `webseal.<name>` owned by a throwaway key; the extension and now the CLI (`record`, `verify --name`) fall back to it. A positive fallback (record only on the subname) has not been seen live.
 
+## ENSv2 (2026-11-06)
+
+ENSv2 is live on mainnet and Sepolia; the ETHGlobal Mumbai ENS track ("Best Use of ENSv2") requires ENSv2 features to be central. What WebSeal uses, all verified against the live contracts:
+
+- `packages/core/src/ensv2.ts`: the Permissioned Resolver ABI subset, taken from the verified source of the live implementation (mainnet `0x565b0f45…`, Sepolia `0x115eb53f…`; identical ABIs). The `contracts-v2` repo's main branch is newer and differs (`setText(bytes32…)`, `authorizeTextRoles`): do not use it.
+- CLI `publish` detects an ENSv2 resolver (`getRecordCount`) and calls `setText(bytes dnsName, key, value)`; ENSv1 resolvers still get `setText(bytes32 node, …)`.
+- CLI `grant` / `revoke` / `writers` / `link`: per-record `ROLE_SET_TEXT` for the `webseal` key (`grantSetterRoles`, `revokeRoles` with the resource from `decodeSetter`), role counts via `getAssigneeCount`, record linking via `linkToNode`. Every write can be dry-run with `--as <address>`.
+- Extension popup: "Can change it: N accounts with full control, M keys for this record only (ENSv2)".
+- Tested: all writes simulated on mainnet as the owner of `smxreds.eth` (would succeed; an ungranted key is rejected); e2e through the fake ENS RPC, which now also serves ENSv2 resolver views.
+- Not yet run on chain with a real key: `grant`, `publish` by the granted CI key, `revoke`, `link`.
+- `smxreds.eth` (mainnet, owner `0x264F…1018E`, expires 2027-11-03) has its own Permissioned Resolver `0x2d47164C…` with 2 full-control accounts; only the owner is identified. Find the other before the demo.
+
 ## Known limitations (also in README)
 
 Poisoned source repo is out of scope. The extension re-fetches files to hash them (cache: force-cache), so a server serving different bytes to the re-fetch could evade it; the debugger API would close that. Service workers, WASM and web workers are not collected. ENS lookup trusts the RPC. Inline scripts must be listed in the manifest's `inline` array (the CLI extracts them from HTML at build time).

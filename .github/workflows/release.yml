@@ -6,8 +6,11 @@
 # Two ENS transactions per release: one before the deploy that accepts the
 # new and the current build, one after the live check that keeps only the new.
 #
-# The only secret is a CI key that should own nothing but the ENS record
-# (an ENSv2 per-record permission, or a subname such as webseal.<app>.eth).
+# The only secret is a CI key that should own nothing but the ENS record. On
+# ENSv2 the owner grants it once: webseal grant --name <app>.eth --to <CI address>
+# (it can then change the webseal record and nothing else). On ENSv1, transfer it
+# the subname webseal.<app>.eth instead. Each run costs the CI key two small
+# transactions (about $0.09 on mainnet at 0.1 gwei; free on Sepolia).
 #
 # Repository variables:
 #   WEBSEAL_ENS_NAME   name to anchor on (e.g. acme.eth or webseal.acme.eth). Empty: no anchoring.

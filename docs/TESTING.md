@@ -54,17 +54,25 @@ Why: the only path not exercised anywhere is the live ENS text record read and w
 4. In the popup, type `yourname.eth`, press **Pin ENS name**. Badge turns green with the anchor shown as `yourname.eth (sepolia)`.
 5. Tamper, reload, red. Restore, reload, green.
 
-### 3. Limited-rights CI key (ENS track story, 15 min)
+### 3. Limited-rights CI key with ENSv2 (ENS track story, 15 min)
 
-1. Create the subname `webseal.yourname.eth` and transfer it to a second throwaway wallet (the "CI key").
-2. Publish with the CI key to the subname:
+Works on any name with an ENSv2 Permissioned Resolver (mainnet names registered or migrated after the ENSv2 launch, and Sepolia names from https://sepolia.app.ens.domains). `smxreds.eth` on mainnet already has one. Add `--as 0xADDRESS` to any write first to dry-run it and see the cost.
+
+1. Make a second throwaway wallet, the "CI key", and give it a little ETH for gas (Sepolia: faucet; mainnet: about $1 covers dozens of releases).
+2. As the owner, let it change only the `webseal` record:
    ```bash
-   WEBSEAL_PRIVATE_KEY=0x<ci key> node packages/cli/dist/webseal.js publish --name webseal.yourname.eth --chain sepolia
+   WEBSEAL_PRIVATE_KEY=0x<owner key> node packages/cli/dist/webseal.js grant --name yourname.eth --to 0x<CI address> --chain sepolia
    ```
-3. Clear the record on the parent name (or never set it). Pin `yourname.eth` in the popup. The extension falls back to `webseal.yourname.eth` and goes green.
-4. Try to set any record on `yourname.eth` with the CI key: it must fail. That is the demo line: "a leaked CI key can publish a bad hash and nothing else."
+3. Publish with the CI key, then check:
+   ```bash
+   WEBSEAL_PRIVATE_KEY=0x<ci key> node packages/cli/dist/webseal.js publish --name yourname.eth --chain sepolia
+   node packages/cli/dist/webseal.js writers --name yourname.eth --chain sepolia --check 0x<CI address>
+   ```
+   Expected: the publish succeeds, `writers` shows "1 with only this record" and the CI address CAN change it. The popup's "Can change it" row says "1 account with full control, 1 key for this record only (ENSv2)".
+4. Show it can do nothing else: in the ENS app, connected as the CI wallet, try to edit any other record of `yourname.eth`; it is refused. That is the demo line: "a leaked CI key can publish a bad hash and nothing else, and one `revoke` takes even that away".
+5. Revoke: `WEBSEAL_PRIVATE_KEY=0x<owner key> node packages/cli/dist/webseal.js revoke --name yourname.eth --from 0x<CI address> --chain sepolia`, then `writers` shows 0 with only this record.
 
-If the ENS track supports ENSv2 per-record permissions on its testnet, replace the subname with a permission for the CI key on the `webseal` key of the parent name.
+If `writers` reports more than one account with full control, find out who the others are before the demo (the resolver's `EACRolesChanged` events on resource 0 in a block explorer, or `--rpc` with your own node URL): each of them can anchor any build. On a name with an ENSv1 resolver, use the subname pattern instead: transfer `webseal.yourname.eth` to the CI key and publish to the subname; the extension falls back to it.
 
 ### 4. Push to GitHub (2 min)
 
