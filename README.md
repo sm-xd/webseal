@@ -16,6 +16,31 @@ WebSeal makes that comparison on every page load.
 
 The ENS name is the root of trust. Writing its record needs a wallet signature and is public and timestamped. An attacker with write access to the hosting bucket, as in the Bybit case, has no way to update it.
 
+## Try it live
+
+Two copies of wagmi's open-source playground, hosted on S3 + CloudFront and anchored on `smxreds.eth` (Sepolia, ENSv2 Permissioned Resolver):
+
+| Site | What it serves | With WebSeal |
+|---|---|---|
+| **https://d3jpa9ni610gas.cloudfront.net** | the released build | green ✓, Send reaches the wallet |
+| **https://dtu67t9tm8wxk.cloudfront.net** | the same build with one file changed: Send Transaction pays `0xbad0…0bad` whatever address you type | red banner ✗, the wallet never sees the request |
+
+1. Build and load the extension: `pnpm install && pnpm build`, then chrome://extensions → Developer mode → Load unpacked → `packages/extension/dist`.
+2. Open a site, click the WebSeal icon, set **Sepolia testnet** under settings and Save, type `smxreds.eth` and click **Pin ENS name**. Do the same on the other site.
+3. Connect any wallet (on Sepolia) and try Send Transaction on both.
+
+Without the extension, check from the terminal (no wallet needed):
+
+```bash
+node packages/cli/dist/webseal.js verify https://d3jpa9ni610gas.cloudfront.net --name smxreds.eth --chain sepolia   # VERIFIED
+node packages/cli/dist/webseal.js verify https://dtu67t9tm8wxk.cloudfront.net --name smxreds.eth --chain sepolia   # FAILED, names the file
+pnpm wagmi:reproduce https://d3jpa9ni610gas.cloudfront.net   # rebuilds from this repo at the manifest's commit: REPRODUCED
+```
+
+Demo video (2 min): [`video-assets/final/webseal-demo-2min.mp4`](video-assets/final/webseal-demo-2min.mp4).
+
+Hosting is two private S3 buckets, each behind CloudFront with Origin Access Control. A release is `aws s3 sync apps/wagmi-playground/dist s3://<bucket> --delete` plus a CloudFront invalidation; nothing WebSeal-specific runs on the server.
+
 ## Repository
 
 | Path | What |
