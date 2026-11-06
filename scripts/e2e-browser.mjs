@@ -12,12 +12,21 @@ const { chromium } = (() => {
 import { spawn, execFileSync } from 'node:child_process';
 import { readFile, mkdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const EXT = join(ROOT, 'packages/extension/dist');
 const DEMO = join(ROOT, 'apps/demo');
+
+// This run rewrites the served manifest for its own test anchor. Put back the one that was
+// there before (for example one published on ENS for a live demo) when the run ends.
+const SERVED_MANIFEST = join(DEMO, 'dist/.well-known/webseal.json');
+const savedManifest = existsSync(SERVED_MANIFEST) ? readFileSync(SERVED_MANIFEST) : null;
+process.on('exit', () => {
+  if (savedManifest) writeFileSync(SERVED_MANIFEST, savedManifest);
+});
 const CLI = join(ROOT, 'packages/cli/dist/webseal.js');
 const PORT = 4199;
 const ORIGIN = `http://localhost:${PORT}`;
@@ -352,8 +361,9 @@ await page.goto(ORIGIN);
 await settle();
 {
   const other = 'b'.repeat(64);
-  const records = { 'webseal.acme-sub.eth': `v1:sha256:${HASH}`, 'acme-roll.eth': `v1:sha256:${other},${HASH}`, 'acme-stale.eth': `v1:sha256:${other}` };
-  const ens = spawn('node', [join(ROOT, 'scripts/fixtures/fake-ens-rpc.mjs'), '8595', JSON.stringify(records)], { stdio: ['ignore', 'pipe', 'inherit'] });
+  const records = { 'webseal.acme-sub.eth': `v1:sha256:${HASH}`, 'acme-roll.eth': `v1:sha256:${other},${HASH}`, 'acme-stale.eth': `v1:sha256:${other}`, 'acme-v2.eth': `v1:sha256:${HASH}` };
+  const writers = { 'acme-v2.eth': { all: 1, only: 1 } };
+  const ens = spawn('node', [join(ROOT, 'scripts/fixtures/fake-ens-rpc.mjs'), '8595', JSON.stringify(records), JSON.stringify(writers)], { stdio: ['ignore', 'pipe', 'inherit'] });
   await new Promise((r) => ens.stdout.on('data', (d) => /ready/.test(String(d)) && r()));
   await sw.evaluate(async () => chrome.storage.local.set({ settings: { chain: 'sepolia', rpc: 'http://localhost:8596' } }));
   const pinName = async (name) => {
@@ -376,6 +386,16 @@ await settle();
   }
   check((await pinName('acme-roll.eth')) === '✓', 'ENS pin: rollout record with two hashes accepts the served build');
   check((await pinName('acme-stale.eth')) === '✗', 'ENS pin: record anchoring a different build is ✗');
+  check((await pinName('acme-v2.eth')) === '✓', 'ENS pin: name on an ENSv2 Permissioned Resolver verifies ✓');
+  {
+    const pop = await ctx.newPage();
+    await pop.goto(`chrome-extension://${extId}/popup.html?tab=${demoTab}`);
+    await pop.waitForTimeout(500);
+    const w = (await pop.textContent('#writers')) ?? '';
+    check(w.includes('1 account with full control, 1 key for this record only (ENSv2)'), `popup shows who can change the ENSv2 record (${w})`);
+    await pop.close();
+    await page.bringToFront();
+  }
   await sw.evaluate(async ([host, hash]) => {
     const { pins } = await chrome.storage.local.get('pins');
     await chrome.storage.local.set({ pins: { ...pins, [host]: { kind: 'hash', hash } }, settings: { chain: 'sepolia' } });
@@ -517,6 +537,49 @@ await ctx.close();
   }
   run(join(DEMO, 'restore.mjs'));
   await ctx2.close();
+}
+
+// 12. Another extension owns window.ethereum (like Flow Wallet: a locked accessor that routes
+//     to the wallet), so WebSeal cannot wrap it. The wallet's provider itself must be guarded.
+//     Run in several load orders, since Chrome does not promise which extension injects first.
+{
+  const WALLET = join(ROOT, 'scripts/fixtures/fake-wallet');
+  const ROUTER = join(ROOT, 'scripts/fixtures/fake-router');
+  for (const order of [[ROUTER, WALLET, EXT], [EXT, WALLET, ROUTER], [WALLET, ROUTER, EXT]]) {
+    const label = order.map((p) => (p === EXT ? 'webseal' : p === WALLET ? 'wallet' : 'router')).join(' > ');
+    const exts = order.join(',');
+    const ctx3 = await chromium.launchPersistentContext('', { channel: 'chromium', headless: true, args: [`--disable-extensions-except=${exts}`, `--load-extension=${exts}`] });
+    await new Promise((r) => setTimeout(r, 1500));
+    let sw3;
+    for (const w of ctx3.serviceWorkers()) if ((await w.evaluate(() => chrome.runtime.getManifest().name).catch(() => '')) === 'WebSeal') sw3 = w;
+    sw3 ??= await ctx3.waitForEvent('serviceworker');
+    await sw3.evaluate(async ([host, hash]) => chrome.storage.local.set({ pins: { [host]: { kind: 'hash', hash } } }), [`localhost:${PORT}`, HASH]);
+    const p = await ctx3.newPage();
+    const send = () =>
+      p.evaluate(async () => {
+        const d = Object.getOwnPropertyDescriptor(window, 'ethereum');
+        const routed = !!window.fakeRouter && d && d.configurable === false;
+        try {
+          await window.ethereum.request({ method: 'eth_sendTransaction', params: [{}] });
+          return { routed, r: 'allowed' };
+        } catch (e) {
+          return { routed, r: `blocked ${e.code}` };
+        }
+      });
+    run(join(DEMO, 'restore.mjs'));
+    await p.goto(ORIGIN);
+    await p.waitForTimeout(1500);
+    const clean = await send();
+    run(join(DEMO, 'tamper.mjs'));
+    await p.reload();
+    await p.waitForTimeout(1500);
+    const bad = await send();
+    const walletSaw = await p.evaluate(() => (window.__extWalletCalls ?? []).filter((m) => m === 'eth_sendTransaction').length);
+    check(clean.routed && clean.r === 'allowed', `router owns window.ethereum (${label}): clean page can send`);
+    check(bad.routed && bad.r === 'blocked 4100' && walletSaw === 0, `router owns window.ethereum (${label}): tampered page blocked (${bad.r})`);
+    run(join(DEMO, 'restore.mjs'));
+    await ctx3.close();
+  }
 }
 server.kill();
 console.log(failures ? `\n${failures} check(s) failed` : '\nall checks passed');

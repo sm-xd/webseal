@@ -33,7 +33,7 @@ import { join, resolve, extname, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { createHash } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 
 const require = createRequire(import.meta.url);
 const { chromium } = require('playwright');
@@ -41,6 +41,14 @@ const { chromium } = require('playwright');
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const EXT = join(ROOT, 'packages/extension/dist');
 const DEMO = join(ROOT, 'apps/demo');
+
+// This run rewrites the served manifest for its own test anchor. Put back the one that was
+// there before (for example one published on ENS for a live demo) when the run ends.
+const SERVED_MANIFEST = join(DEMO, 'dist/.well-known/webseal.json');
+const savedManifest = existsSync(SERVED_MANIFEST) ? readFileSync(SERVED_MANIFEST) : null;
+process.on('exit', () => {
+  if (savedManifest) writeFileSync(SERVED_MANIFEST, savedManifest);
+});
 const CLI = join(ROOT, 'packages/cli/dist/webseal.js');
 const TEST_WALLET = join(ROOT, 'scripts/fixtures/fake-wallet');
 const PORT = 4173; // the demo's usual port, so a MetaMask profile set up with `--setup` stays connected

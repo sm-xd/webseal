@@ -22,7 +22,8 @@ if (!env.SKIP_BUILD) {
   sh('pnpm', ['build']);
 }
 console.log('\n> writing manifest');
-sh('node', [CLI, 'build', '--dist', join(DEMO, 'dist'), '--name', env.WEBSEAL_ENS_NAME ?? 'acme-demo.eth']);
+// --no-commit keeps the fingerprint the same across rebuilds, so a published record stays valid.
+sh('node', [CLI, 'build', '--dist', join(DEMO, 'dist'), '--name', env.WEBSEAL_ENS_NAME ?? 'acme-demo.eth', '--no-commit']);
 
 console.log(`\n> serving demo at ${URL_}`);
 const server = spawn('node', [join(DEMO, 'server.mjs')], { env: { ...env, PORT: String(PORT) }, stdio: 'inherit' });

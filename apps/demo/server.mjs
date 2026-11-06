@@ -35,7 +35,7 @@ createServer(async (req, res) => {
       'content-type': MIME[extname(file)] ?? 'application/octet-stream',
       'content-length': body.length,
       'cache-control': 'no-cache',
-      'content-security-policy': "default-src 'self'; connect-src *; style-src 'self' 'unsafe-inline'",
+      'content-security-policy': "default-src 'self'; connect-src *; img-src 'self' data:; style-src 'self' 'unsafe-inline'",
     });
     res.end(body);
   } catch {

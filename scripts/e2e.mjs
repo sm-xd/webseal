@@ -2,11 +2,20 @@
 import { spawn, execFileSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const DEMO = join(ROOT, 'apps/demo');
+
+// This run rewrites the served manifest for its own test anchor. Put back the one that was
+// there before (for example one published on ENS for a live demo) when the run ends.
+const SERVED_MANIFEST = join(DEMO, 'dist/.well-known/webseal.json');
+const savedManifest = existsSync(SERVED_MANIFEST) ? readFileSync(SERVED_MANIFEST) : null;
+process.on('exit', () => {
+  if (savedManifest) writeFileSync(SERVED_MANIFEST, savedManifest);
+});
 const CLI = join(ROOT, 'packages/cli/dist/webseal.js');
 const PORT = 4198;
 const ENS_PORT = 8597; // control port; the RPC listens on ENS_PORT + 1
@@ -45,8 +54,10 @@ try {
     'webseal.acme-sub.eth': `v1:sha256:${hash}`, // only the subname has the record (limited-rights CI key)
     'acme-roll.eth': `v1:sha256:${other},${hash}`, // rollout: new hash first, served build second
     'acme-stale.eth': `v1:sha256:${other}`, // anchors a different build
+    'acme-v2.eth': `v1:sha256:${hash}`, // on an ENSv2 Permissioned Resolver
   };
-  const ens = spawn('node', [join(ROOT, 'scripts/fixtures/fake-ens-rpc.mjs'), String(ENS_PORT), JSON.stringify(records)], { stdio: ['ignore', 'pipe', 'inherit'] });
+  const writers = { 'acme-v2.eth': { all: 1, only: 1 } }; // the owner, plus a CI key limited to the webseal record
+  const ens = spawn('node', [join(ROOT, 'scripts/fixtures/fake-ens-rpc.mjs'), String(ENS_PORT), JSON.stringify(records), JSON.stringify(writers)], { stdio: ['ignore', 'pipe', 'inherit'] });
   try {
     await new Promise((r) => ens.stdout.on('data', (d) => /ready/.test(String(d)) && r()));
     const ensVerify = (name) => run([CLI, 'verify', `http://localhost:${PORT}`, '--name', name, '--chain', 'sepolia', '--rpc', `http://localhost:${ENS_PORT + 1}`], false);
@@ -55,6 +66,10 @@ try {
     check(ensVerify('acme-roll.eth').code === 0, 'ENS: rollout record listing two hashes accepts the served build');
     const stale = ensVerify('acme-stale.eth');
     check(stale.code === 1 && /manifest  MISMATCH/.test(stale.out), 'ENS: record anchoring a different build fails');
+    const v2rec = run([CLI, 'record', '--name', 'acme-v2.eth', '--chain', 'sepolia', '--rpc', `http://localhost:${ENS_PORT + 1}`], false);
+    check(v2rec.out.includes('1 account(s) with every record, 1 with only this record'), 'ENSv2: record shows who can change it (owner + CI key limited to the record)');
+    const v1rec = run([CLI, 'grant', '--name', 'acme-roll.eth', '--to', '0x' + '1'.repeat(40), '--as', '0x' + '2'.repeat(40), '--chain', 'sepolia', '--rpc', `http://localhost:${ENS_PORT + 1}`], false);
+    check(v1rec.code === 1, 'ENSv2: grant refuses a name on an ENSv1 resolver');
     const none = ensVerify('acme-none.eth');
     check(none.code === 1, 'ENS: name without a record fails');
   } finally {
