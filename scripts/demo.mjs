@@ -27,6 +27,18 @@ sh('node', [CLI, 'build', '--dist', join(DEMO, 'dist'), '--name', env.WEBSEAL_EN
 console.log(`\n> serving demo at ${URL_}`);
 const server = spawn('node', [join(DEMO, 'server.mjs')], { env: { ...env, PORT: String(PORT) }, stdio: 'inherit' });
 
+// Google Chrome 137+ ignores --load-extension, so prefer Playwright's Chromium (a dev
+// dependency; `npx playwright install chromium` fetches it), which still honors it.
+async function playwrightChromium() {
+  try {
+    const { chromium } = await import('playwright');
+    const p = chromium.executablePath();
+    return existsSync(p) ? p : null;
+  } catch {
+    return null;
+  }
+}
+
 function findChrome() {
   if (env.CHROME) return env.CHROME;
   const candidates =
@@ -54,7 +66,14 @@ function findChrome() {
   return null;
 }
 
-const chrome = findChrome();
+const chrome = env.CHROME ?? (await playwrightChromium()) ?? findChrome();
+const branded = chrome && /Google[\\/ ]Chrome/i.test(chrome) && !env.CHROME;
+if (branded) {
+  console.log(`
+Note: ${chrome} is Google Chrome, which ignores --load-extension since version 137.
+After it opens: chrome://extensions -> Developer mode -> Load unpacked -> ${EXT}
+(once; the profile in .chrome-profile/ keeps it). Or run: npx playwright install chromium`);
+}
 if (!chrome) {
   console.log(`
 Chrome not found automatically. Either set CHROME=/path/to/chrome and rerun, or:
