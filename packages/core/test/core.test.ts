@@ -104,3 +104,13 @@ test('JS SHA-256 fallback matches Web Crypto on block-boundary and large inputs'
   }
   assert.equal(sha256HexJs(new TextEncoder().encode('abc')), 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
 });
+
+test('ENSv2 assignee counts are read per role nybble', async () => {
+  const { assigneeCount, ROLE_SET_TEXT } = await import('../src/index.ts');
+  // live value for a resource with no holders: counts 0, mask 0xf0
+  assert.equal(assigneeCount(0n, ROLE_SET_TEXT), 0);
+  // two holders of the text role (nybble 1) and one of the addr role (nybble 0)
+  assert.equal(assigneeCount(0x21n, ROLE_SET_TEXT), 2);
+  assert.equal(assigneeCount(0x21n, 1n), 1);
+  assert.throws(() => assigneeCount(0x21n, 3n));
+});

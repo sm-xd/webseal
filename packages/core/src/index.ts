@@ -5,6 +5,8 @@
  * browser pages and extension service workers: only Web Crypto and fetch.
  */
 
+import type { RecordWriters } from './ensv2.ts';
+
 export const RECORD_KEY = 'webseal';
 export const MANIFEST_PATH = '/.well-known/webseal.json';
 export const RECORD_PREFIX = 'v1:sha256:';
@@ -28,8 +30,10 @@ export interface Manifest {
   version: 1;
   /** ENS name the publisher intends this build to be anchored to. Informational. */
   name?: string;
-  /** Git commit the build came from. Informational. */
+  /** Git commit the build came from. `webseal reproduce` rebuilds it. */
   commit?: string;
+  /** Public source repository (git URL) the build came from. `webseal reproduce` clones it. */
+  repo?: string;
   /** Absolute URL path -> lowercase hex sha256 of the file bytes. */
   files: Record<string, string>;
   /** sha256 of allowed inline <script> bodies found in the HTML files. */
@@ -49,7 +53,7 @@ export interface FileResult {
 export interface VerifyReport {
   ok: boolean;
   /** Where the expected manifest hash came from. */
-  anchor: { kind: 'ens' | 'hash' | 'none'; name?: string; hash?: string; chain?: string; error?: string };
+  anchor: { kind: 'ens' | 'hash' | 'none'; name?: string; hash?: string; chain?: string; error?: string; writers?: RecordWriters };
   manifest: { expected?: string; actual?: string; ok: boolean; error?: string };
   files: FileResult[];
   inline: FileResult[];
@@ -304,3 +308,5 @@ export function extractInlineScripts(html: string): string[] {
   }
   return out;
 }
+
+export * from './ensv2.ts';
