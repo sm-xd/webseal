@@ -40,5 +40,10 @@ function png(size) {
   ]);
 }
 
-await mkdir('dist/icons', { recursive: true });
-for (const s of [16, 32, 48, 128]) await writeFile(`dist/icons/icon${s}.png`, png(s));
+// node icons.mjs [--out dir] [size ...]: the extension build uses the defaults.
+const args = process.argv.slice(2);
+const outAt = args.indexOf('--out');
+const out = outAt >= 0 ? args.splice(outAt, 2)[1] : 'dist/icons';
+const sizes = args.length ? args.map(Number) : [16, 32, 48, 128];
+await mkdir(out, { recursive: true });
+for (const s of sizes) await writeFile(`${out}/icon${s}.png`, png(s));

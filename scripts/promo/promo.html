@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>WebSeal promo</title>
+<!--
+  60-second pitch video, played in real time and recorded by scripts/promo-video.mjs.
+  Every image is a real screenshot from scripts/screenshots.mjs (docs/screenshots).
+  Minimal and calm: paper, 2px ink rules, one accent, red only for the attack.
+-->
+<style>
+  :root {
+    --paper: #e8eaed; --cell: #ffffff; --ink: #101114; --muted: #5b606b;
+    --accent: #2348ff; --red: #b00020; --green: #15803d;
+    --sans: ui-sans-serif, system-ui, 'Segoe UI', Helvetica, Arial, sans-serif;
+    --mono: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; width: 1920px; height: 1080px; overflow: hidden; background: var(--paper); color: var(--ink); font-family: var(--sans); -webkit-font-smoothing: antialiased; }
+  .scene { position: absolute; inset: 0; padding: 88px 120px 0; opacity: 0; transition: opacity .7s ease; }
+  .scene.on { opacity: 1; }
+  .kicker { font: 600 22px/1 var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
+  .kicker b { color: var(--accent); font-weight: 600; }
+  h1 { margin: 0; font: 800 200px/0.95 var(--sans); letter-spacing: -0.04em; }
+  h2 { margin: 0; font: 700 64px/1.08 var(--sans); letter-spacing: -0.02em; }
+  p { margin: 0; font: 400 38px/1.35 var(--sans); color: var(--ink); max-width: 1500px; }
+  .muted { color: var(--muted); }
+  .rule { height: 2px; background: var(--ink); margin: 40px 0; }
+  .red { color: var(--red); }
+  .acc { color: var(--accent); }
+  code { font-family: var(--mono); font-size: .9em; }
+
+  /* the caption bar every product scene shares */
+  .cap { position: absolute; left: 120px; right: 120px; bottom: 64px; display: flex; gap: 28px; align-items: baseline; border-top: 2px solid var(--ink); padding-top: 22px; }
+  .cap .n { font: 600 22px/1 var(--mono); color: var(--muted); letter-spacing: .12em; min-width: 150px; }
+  .cap .t { font: 500 36px/1.3 var(--sans); }
+
+  /* images sit in ruled frames and drift very slightly */
+  .frame { position: absolute; border: 2px solid var(--ink); background: var(--cell); overflow: hidden; }
+  .frame.bare { border: 0; background: none; overflow: visible; }
+  .frame img { display: block; width: 100%; height: auto; transform-origin: 50% 0; }
+  .scene.on .frame img { animation: drift var(--d, 8s) linear forwards; }
+  @keyframes drift { from { transform: scale(1); } to { transform: scale(1.035); } }
+  .label { position: absolute; top: -40px; left: -2px; font: 600 18px/1 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+  .late { opacity: 0; transition: opacity .6s ease; }
+  .late.on { opacity: 1; }
+
+  /* the three-step diagram */
+  .steps { display: grid; grid-template-columns: 1fr 1fr 1fr; border: 2px solid var(--ink); margin-top: 56px; }
+  .step { padding: 36px 36px 40px; border-right: 2px solid var(--ink); background: var(--cell); min-height: 360px; }
+  .step:last-child { border-right: 0; }
+  .step .i { font: 600 22px/1 var(--mono); color: var(--accent); letter-spacing: .12em; }
+  .step h3 { margin: 22px 0 16px; font: 700 44px/1.1 var(--sans); }
+  .step div { font: 400 30px/1.4 var(--sans); color: var(--muted); }
+  .step div code { color: var(--ink); }
+  .big-num { font: 800 260px/0.9 var(--sans); letter-spacing: -0.05em; color: var(--red); }
+</style>
+</head>
+<body>
+
+<!-- 1. title -->
+<section class="scene" data-d="5">
+  <div style="position:absolute; left:120px; right:120px; top:250px">
+    <div class="kicker">ETHGlobal Mumbai · <b>CROPS</b> · <b>ENSv2</b></div>
+    <div style="height:44px"></div>
+    <h1>WebSeal</h1>
+    <div class="rule" style="max-width:900px"></div>
+    <p style="font-size:52px">Is this the code they shipped?</p>
+  </div>
+</section>
+
+<!-- 2. problem -->
+<section class="scene" data-d="8">
+  <div class="kicker">The problem</div>
+  <div style="display:flex; gap:90px; align-items:flex-start; margin-top:70px">
+    <div class="big-num">$1.5B</div>
+    <div style="padding-top:26px">
+      <p><b>February 2025.</b> One JavaScript file on Safe{Wallet}'s host was changed. The repo was clean. The contracts were fine. Bybit's signers saw a normal page and approved.</p>
+    </div>
+  </div>
+  <div class="rule"></div>
+  <p class="muted" style="font-size:34px">2026, same pattern: CoW Swap, Bonk.fun, Polymarket. The frontend, not the contracts.</p>
+</section>
+
+<!-- 3. how -->
+<section class="scene" data-d="8">
+  <div class="kicker">How WebSeal works</div>
+  <div class="steps">
+    <div class="step"><div class="i">01 · RELEASE</div><h3>CI hashes every file</h3><div>into a manifest served at <code>/.well-known/webseal.json</code></div></div>
+    <div class="step"><div class="i">02 · ANCHOR</div><h3>The hash goes on ENS</h3><div>text record <code>webseal</code>. With ENSv2, the CI key can change only that record.</div></div>
+    <div class="step"><div class="i">03 · CHECK</div><h3>The extension checks the page</h3><div>every script, style and the HTML. A mismatch blocks wallet signing.</div></div>
+  </div>
+  <p class="muted" style="margin-top:44px; font-size:34px">No WebSeal server. The browser checks against ENS directly.</p>
+</section>
+
+<!-- 4. clean -->
+<section class="scene" data-d="8" style="--d:8s">
+  <div class="frame" style="left:120px; top:110px; width:1180px"><div class="label">wagmi app · localhost</div><img src="/docs/screenshots/06-web-clean-verified.png"></div>
+  <div class="frame" style="left:1360px; top:110px; width:440px"><div class="label">WebSeal</div><img src="/docs/screenshots/07-ext-popup-verified.png"></div>
+  <div class="cap"><span class="n">CLEAN</span><span class="t">A real open-source dApp (wagmi). Every file matches the release anchored on <b>smxreds.eth</b>.</span></div>
+</section>
+
+<!-- 5. attack -->
+<section class="scene" data-d="5" style="--d:5s">
+  <div class="frame bare" style="left:260px; top:230px; width:1400px"><img src="/docs/screenshots/11-cli-tamper.png"></div>
+  <div class="cap"><span class="n red">ATTACK</span><span class="t">One served file changed on the host. The repo, the build and the ENS record are untouched.</span></div>
+</section>
+
+<!-- 6. blocked -->
+<section class="scene" data-d="10" style="--d:10s">
+  <div class="frame" style="left:120px; top:110px; width:1180px"><div class="label">same URL, reloaded</div><img src="/docs/screenshots/15-web-send-blocked-with-banner.png"></div>
+  <div class="frame" style="left:1360px; top:110px; width:440px"><div class="label">WebSeal</div><img src="/docs/screenshots/14-ext-popup-tampered.png"></div>
+  <div class="frame bare late" data-at="4.5" style="left:620px; top:440px; width:1180px"><img src="/docs/screenshots/17-wallet-request-tampered-blocked.png"></div>
+  <div class="cap"><span class="n red">BLOCKED</span><span class="t">WebSeal names the changed file and blocks signing. The wallet never gets the request.</span></div>
+</section>
+
+<!-- 7. without -->
+<section class="scene" data-d="7" style="--d:7s">
+  <div class="frame" style="left:260px; top:150px; width:1400px"><div class="label">without WebSeal · what you typed</div><img src="/docs/screenshots/20-web-no-webseal-tampered-form.png"></div>
+  <div class="frame bare late" data-at="2" style="left:260px; top:470px; width:1400px"><div class="label">what the wallet is asked to sign</div><img src="/docs/screenshots/22-wallet-request-no-webseal.png"></div>
+  <div class="cap"><span class="n red">WITHOUT</span><span class="t">You typed your own address. The wallet is asked to pay <code class="red">0xbad0…0bad</code>.</span></div>
+</section>
+
+<!-- 8. reproduce -->
+<section class="scene" data-d="5" style="--d:5s">
+  <div class="frame bare" style="left:260px; top:130px; width:1400px"><img src="/docs/screenshots/27-cli-reproduce-clean.png"></div>
+  <div class="cap"><span class="n acc">OPEN</span><span class="t">Anyone can rebuild the release from the public repo and get the same bytes.</span></div>
+</section>
+
+<!-- 9. close -->
+<section class="scene" data-d="4">
+  <div style="position:absolute; left:120px; right:120px; top:280px">
+    <h1 style="font-size:150px">WebSeal</h1>
+    <div class="rule" style="max-width:900px"></div>
+    <p style="font-size:46px">Verify the frontend before you sign.</p>
+    <div style="height:56px"></div>
+    <div class="kicker" style="font-size:26px">github.com/sm-xd/webseal · smxreds.eth (Sepolia) · MIT</div>
+  </div>
+</section>
+
+<script>
+  // Plays the scenes in order once window.play() is called; sets window.__done at the end.
+  const scenes = [...document.querySelectorAll('.scene')];
+  window.total = scenes.reduce((s, el) => s + Number(el.dataset.d), 0);
+  window.ready = Promise.all([...document.images].map((i) => i.decode().catch(() => {})));
+  window.play = async (only) => {
+    for (const [i, el] of scenes.entries()) {
+      if (only !== undefined && i !== only) continue;
+      el.classList.add('on');
+      for (const late of el.querySelectorAll('.late')) setTimeout(() => late.classList.add('on'), Number(late.dataset.at) * 1000);
+      await new Promise((r) => setTimeout(r, Number(el.dataset.d) * 1000 - 700));
+      if (i < scenes.length - 1 && only === undefined) el.classList.remove('on');
+      await new Promise((r) => setTimeout(r, 700));
+    }
+    window.__done = true;
+  };
+</script>
+</body>
+</html>

@@ -21,7 +21,9 @@
     "wagmi:serve": "node scripts/wagmi.mjs serve",
     "wagmi:tamper": "node scripts/wagmi.mjs tamper",
     "wagmi:restore": "node scripts/wagmi.mjs restore",
-    "wagmi:reproduce": "node scripts/wagmi.mjs reproduce"
+    "wagmi:reproduce": "node scripts/wagmi.mjs reproduce",
+    "screenshots": "node scripts/screenshots.mjs",
+    "pitch:video": "node scripts/promo-video.mjs"
   },
   "devDependencies": {
     "@types/chrome": "^0.1.43",

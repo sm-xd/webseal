@@ -1,0 +1,430 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>WebSeal 30s</title>
+<!--
+  30-second WebSeal video, drawn on a canvas by code. drawFrame(t) is a pure function of time
+  (no timers, no randomness), so scripts/video/render.mjs can render any frame exactly.
+  renderAudio() synthesizes the soundtrack offline with Web Audio from the same SCENES table,
+  so sound and picture are in sync by construction.
+  Colors, fonts and images: video-assets/ (colors.md dark palette, fonts.md, screenshots, icons).
+-->
+<style>
+  html, body { margin: 0; background: #0b0c0e; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<canvas id="c" width="1920" height="1080"></canvas>
+<script>
+const W = 1920, H = 1080, FPS = 30, DURATION = 30;
+
+/* ---------- design tokens: video-assets/colors.md (dark) and fonts.md ---------- */
+const C = {
+  paper: '#0b0c0e', cell: '#15171b', ink: '#eceef2', muted: '#9aa0ab', line: '#eceef2',
+  accent: '#5b7bff', ok: '#1a8f3c', bad: '#b00020', hatch: '#2a2d33',
+};
+const SANS = '"Segoe UI", ui-sans-serif, system-ui, Helvetica, Arial, sans-serif';
+const MONO = '"Cascadia Mono", ui-monospace, Consolas, monospace';
+
+/* ---------- assets (video-assets/) ---------- */
+const A = '/video-assets/screenshots/wagmi-flow/';
+const M = '/video-assets/screenshots/metamask/';
+const SRC = {
+  icon: '/video-assets/icons/icon512.png',
+  ensRecord: A + '02-cli-ens-record.png',
+  writers: A + '03-cli-ens-writers.png',
+  web: A + '06-web-clean-verified.png',
+  popup: A + '07-ext-popup-verified.png',
+  writersRow: A + '08-ext-popup-writers-row.png',
+  tamper: A + '12-cli-tamper.png',
+  webBad: A + '13-web-tampered-banner.png',
+  popupBad: A + '15-ext-popup-tampered.png',
+  verifyBad: A + '19-cli-verify-tampered.png',
+  reproduce: A + '28-cli-reproduce-clean.png',
+  mmClean: M + 'mm-02-confirm-clean.png',
+  mmBlocked: M + 'mm-03-tampered-no-popup.png',
+  mmAttacker: M + 'mm-04-confirm-attacker.png',
+};
+// Crops of the hand-taken MetaMask shots: no tab bar, no profile icon, no account address.
+const CROP = {
+  mmPanel: { x: 1460, y: 118, w: 452, h: 893 },      // the MetaMask side panel (mm-02, mm-04)
+  mmSend: { x: 492, y: 912, w: 918, h: 100 },        // the page's Send cell (mm-04): what you typed
+  mmBanner: { x: 20, y: 110, w: 1862, h: 113 },      // WebSeal's red banner (mm-03)
+  mmBlockedSend: { x: 707, y: 763, w: 980, h: 152 }, // the Send cell with the error (mm-03)
+  mmTo: { x: 20, y: 344, w: 396, h: 68 },            // the "To 0xBAd0…" row inside mmPanel (mm-04)
+  writersTop: { x: 0, y: 0, w: 2200, h: 276 },       // `webseal writers`: command, name, resolver, writers lines
+};
+const IMG = {};
+window.ready = Promise.all(Object.entries(SRC).map(([k, src]) => new Promise((res, rej) => {
+  const i = new Image();
+  i.onload = () => res((IMG[k] = i));
+  i.onerror = () => rej(new Error('missing ' + src));
+  i.src = src;
+}))).then(() => Promise.all([
+  document.fonts.load(`800 100px "Segoe UI"`), document.fonts.load(`400 30px "Segoe UI"`),
+  document.fonts.load(`600 22px "Cascadia Mono"`),
+]));
+
+/* ---------- timeline: the approved storyboard, compressed to 30 s ---------- */
+const SCENES = [
+  { id: 'intro', start: 0.0, end: 2.6 },
+  { id: 'problem', start: 2.6, end: 5.6 },
+  { id: 'how', start: 5.6, end: 9.2 },
+  { id: 'ensv2', start: 9.2, end: 11.6 },
+  { id: 'clean', start: 11.6, end: 15.2 },
+  { id: 'attack', start: 15.2, end: 16.8 },
+  { id: 'blocked', start: 16.8, end: 20.6 },
+  { id: 'without', start: 20.6, end: 23.6 },
+  { id: 'check', start: 23.6, end: 26.6 },
+  { id: 'crops', start: 26.6, end: 28.2 },
+  { id: 'close', start: 28.2, end: 30.0 },
+];
+window.SCENES = SCENES;
+const FADE_IN = 0.3, FADE_OUT = 0.22;
+
+/* ---------- helpers ---------- */
+const cv = document.getElementById('c');
+const g = cv.getContext('2d');
+const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
+const easeOut = (x) => 1 - Math.pow(1 - clamp(x), 3);
+const inOut = (x) => { x = clamp(x); return x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2; };
+const appear = (lt, at, d = 0.45) => easeOut((lt - at) / d);
+// A swap inside a scene, sequential like the scene cuts: the old part fades out over the first
+// half of `d`, then the new part fades in. Returns [old alpha, new alpha]; never both visible.
+const swap = (lt, at, d = 0.5) => [1 - inOut((lt - at) / (d / 2)), inOut((lt - at - d / 2) / (d / 2))];
+
+function withAlpha(a, fn) { if (a <= 0.001) return; g.save(); g.globalAlpha *= a; fn(); g.restore(); }
+function rise(a, px = 18) { return (1 - a) * px; }
+
+function font(size, weight = 400, family = SANS) { return `${weight} ${size}px ${family}`; }
+function text(s, x, y, { size = 32, weight = 400, family = SANS, color = C.ink, align = 'left', spacing = 0, maxW } = {}) {
+  g.font = font(size, weight, family);
+  g.letterSpacing = spacing + 'px';
+  // never let a line run off its box: shrink to fit
+  if (maxW) { let sz = size; while (g.measureText(s).width > maxW && sz > 12) { sz -= 1; g.font = font(sz, weight, family); } }
+  g.fillStyle = color;
+  g.textAlign = align;
+  g.textBaseline = 'alphabetic';
+  g.fillText(s, x, y);
+  g.letterSpacing = '0px';
+}
+function wrap(s, x, y, maxW, lineH, opts) {
+  g.font = font(opts.size, opts.weight ?? 400, opts.family ?? SANS);
+  const words = s.split(' ');
+  let line = '', yy = y;
+  for (const w of words) {
+    const test = line ? line + ' ' + w : w;
+    if (g.measureText(test).width > maxW && line) { text(line, x, yy, opts); line = w; yy += lineH; } else line = test;
+  }
+  if (line) text(line, x, yy, opts);
+  return yy;
+}
+function kicker(s, x, y, color = C.muted) { text(s.toUpperCase(), x, y, { size: 22, weight: 600, family: MONO, color, spacing: 3 }); }
+function rule(x, y, w, color = C.line) { g.fillStyle = color; g.fillRect(x, y, w, 2); }
+function box(x, y, w, h, { fill = C.cell, stroke = C.line } = {}) {
+  if (fill) { g.fillStyle = fill; g.fillRect(x, y, w, h); }
+  if (stroke) { g.strokeStyle = stroke; g.lineWidth = 2; g.strokeRect(x + 1, y + 1, w - 2, h - 2); }
+}
+
+/** Draws an image (optionally a crop of it) contained in a box, in a 2px ruled frame, with a slow drift. */
+function shot(img, bx, by, bw, bh, { crop, drift = 0, frame = true, label, align = 'start' } = {}) {
+  const sx = crop?.x ?? 0, sy = crop?.y ?? 0, sw = crop?.w ?? img.naturalWidth, sh = crop?.h ?? img.naturalHeight;
+  const s = Math.min(bw / sw, bh / sh);
+  const w = Math.round(sw * s), h = Math.round(sh * s);
+  const x = align === 'center' ? bx + Math.round((bw - w) / 2) : bx;
+  const y = by;
+  g.save();
+  g.beginPath(); g.rect(x, y, w, h); g.clip();
+  const z = 1 + 0.03 * drift; // drift: 0..1 over the scene
+  g.drawImage(img, sx, sy, sw, sh, x - (w * (z - 1)) / 2, y - (h * (z - 1)) / 2, w * z, h * z);
+  g.restore();
+  if (frame) { g.strokeStyle = C.line; g.lineWidth = 2; g.strokeRect(x - 1, y - 1, w + 2, h + 2); }
+  if (label) kicker(label, x, y - 16);
+  return { x, y, w, h, s };
+}
+
+/** The caption bar every product scene shares: rule, a short label, one line of text. */
+function caption(label, labelColor, line, a = 1) {
+  withAlpha(a, () => {
+    rule(120, 944, 1680);
+    text(label.toUpperCase(), 120, 1004, { size: 22, weight: 600, family: MONO, color: labelColor, spacing: 3, maxW: 300 });
+    text(line, 440, 1006, { size: 34, weight: 500, color: C.ink, maxW: 1360 });
+  });
+}
+function captionSwap(label, labelColor, a, b, lt, at) {
+  const [out, inn] = swap(lt, at);
+  caption(label, labelColor, a, out);
+  caption(label, labelColor, b, inn);
+}
+
+/* ---------- scenes ---------- */
+const DRAW = {
+  intro(lt, d) {
+    // the icon and wordmark are already mostly in on frame 0 (often used as the thumbnail)
+    const a1 = appear(lt, -0.3, 0.6), a2 = appear(lt, -0.2, 0.6), a3 = appear(lt, 0.6, 0.6);
+    withAlpha(a1, () => g.drawImage(IMG.icon, 120, 250 + rise(a1), 120, 120));
+    withAlpha(a2, () => text('WebSeal', 112, 560 + rise(a2), { size: 190, weight: 800, spacing: -6 }));
+    rule(120, 612, 900 * easeOut((lt - 0.45) / 0.7));
+    withAlpha(a3, () => text('Is this the code they shipped?', 120, 700 + rise(a3), { size: 52 }));
+  },
+  problem(lt) {
+    withAlpha(appear(lt, 0), () => kicker('The problem', 120, 160));
+    const a = appear(lt, 0.1, 0.6);
+    withAlpha(a, () => text('$1.5B', 112, 470 + rise(a), { size: 260, weight: 800, color: C.bad, spacing: -10 }));
+    const b = appear(lt, 0.35, 0.6);
+    withAlpha(b, () => {
+      text('February 2025', 900, 300 + rise(b), { size: 44, weight: 700 });
+      wrap('One JavaScript file was changed on Safe{Wallet}’s host. The repo was clean.', 900, 360 + rise(b), 880, 56, { size: 40, color: C.ink });
+    });
+    rule(120, 560, 1680 * easeOut((lt - 0.7) / 0.7));
+    const c = appear(lt, 1.1, 0.6);
+    withAlpha(c, () => text('Your wallet signs whatever the page asks for.', 120, 660 + rise(c), { size: 48, color: C.muted }));
+  },
+  how(lt, d) {
+    withAlpha(appear(lt, 0), () => kicker('How it works', 120, 160));
+    const cells = [
+      ['01 · Release', 'CI hashes every file', 'into a manifest'],
+      ['02 · Anchor', 'The fingerprint goes on ENS', 'text record “webseal”'],
+      ['03 · Check', 'The browser checks every file', 'a mismatch blocks signing'],
+    ];
+    cells.forEach(([k, t1, t2], i) => {
+      const a = appear(lt, 0.1 + i * 0.35, 0.5);
+      withAlpha(a, () => {
+        const x = 120 + i * 560, y = 200 + rise(a, 14);
+        box(x, y, i < 2 ? 562 : 560, 270);
+        text(k.toUpperCase(), x + 32, y + 56, { size: 22, weight: 600, family: MONO, color: C.accent, spacing: 3 });
+        wrap(t1, x + 32, y + 120, 490, 50, { size: 40, weight: 700 });
+        text(t2, x + 32, y + 228, { size: 28, color: C.muted, maxW: 490 });
+      });
+    });
+    const b = appear(lt, 1.35, 0.6);
+    withAlpha(b, () => shot(IMG.ensRecord, 120, 540 + rise(b), 1680, 360, { drift: lt / d, frame: false, label: 'the live record · smxreds.eth (Sepolia)' }));
+  },
+  ensv2(lt, d) {
+    withAlpha(appear(lt, 0), () => kicker('ENSv2 · Permissioned Resolver', 120, 160));
+    const a = appear(lt, 0.05, 0.5);
+    withAlpha(a, () => shot(IMG.writers, 120, 220 + rise(a), 1680, 400, { crop: CROP.writersTop, drift: lt / d, frame: false }));
+    const b = appear(lt, 0.5, 0.5);
+    withAlpha(b, () => {
+      const y = 540 + rise(b);
+      box(120, y, 1680, 196);
+      g.fillStyle = C.accent; g.fillRect(120, y, 8, 196);
+      kicker('WebSeal popup', 168, y + 44);
+      shot(IMG.writersRow, 168, y + 64, 1400, 116, { frame: false });
+    });
+    caption('ENSv2', C.accent, 'The release key can change only the webseal record, and users see who can.', appear(lt, 0.3));
+  },
+  clean(lt, d) {
+    const a = appear(lt, 0.0, 0.5);
+    withAlpha(a, () => shot(IMG.web, 120, 110 + rise(a), 1180, 790, { drift: lt / d, label: 'wagmi · localhost:4174' }));
+    const [out, inn] = swap(lt, 1.9);
+    const b = appear(lt, 0.25, 0.5);
+    withAlpha(b * out, () => shot(IMG.popup, 1360, 110 + rise(b), 440, 790, { label: 'WebSeal' }));
+    withAlpha(inn, () => shot(IMG.mmClean, 1360, 110, 440, 790, { crop: CROP.mmPanel, label: 'MetaMask' }));
+    captionSwap('Clean', C.ok, 'A real open-source dApp. Every file matches the release on smxreds.eth.', 'Signing works: MetaMask shows the address you typed.', lt, 1.9);
+  },
+  attack(lt, d) {
+    const a = appear(lt, 0.0, 0.4);
+    withAlpha(a, () => shot(IMG.tamper, 240, 300 + rise(a), 1440, 400, { drift: lt / d, frame: false, align: 'center' }));
+    caption('Attack', C.bad, 'One served file is changed on the host. The page looks the same.', appear(lt, 0.1));
+  },
+  blocked(lt, d) {
+    const [out, k] = swap(lt, 2.0);
+    const a = appear(lt, 0.0, 0.45);
+    withAlpha(a * out, () => {
+      shot(IMG.webBad, 120, 110 + rise(a), 1180, 790, { drift: lt / d, label: 'same URL, reloaded' });
+      shot(IMG.popupBad, 1360, 110 + rise(a), 440, 790, { label: 'WebSeal' });
+    });
+    withAlpha(k, () => {
+      shot(IMG.mmBlocked, 120, 150, 1680, 200, { crop: CROP.mmBanner, label: 'real Chrome + MetaMask' });
+      shot(IMG.mmBlocked, 120, 330, 1300, 220, { crop: CROP.mmBlockedSend });
+      text('MetaMask never opened.', 120, 700, { size: 56, weight: 700 });
+      text('The request was refused before it reached the wallet.', 120, 770, { size: 34, color: C.muted, maxW: 1680 });
+    });
+    captionSwap('Blocked', C.bad, 'WebSeal names the changed file and blocks signing.', 'Wallet signing is blocked on this page.', lt, 2.0);
+  },
+  without(lt, d) {
+    const a = appear(lt, 0.0, 0.45);
+    withAlpha(a, () => {
+      const r = shot(IMG.mmAttacker, 120, 190 + rise(a), 1180, 140, { crop: CROP.mmSend, label: 'what you typed' });
+      const b = appear(lt, 0.9, 0.5);
+      withAlpha(b, () => {
+        text('MetaMask is asked to pay', 120, r.y + r.h + 150, { size: 40, color: C.muted });
+        text('0xBAd0…0Bad', 112, r.y + r.h + 270, { size: 110, weight: 700, family: MONO, color: C.bad, spacing: -2 });
+        text('With WebSeal turned off.', 120, r.y + r.h + 350, { size: 34, color: C.muted });
+      });
+    });
+    const p = appear(lt, 0.3, 0.45);
+    withAlpha(p, () => {
+      const r = shot(IMG.mmAttacker, 1360, 110 + rise(p), 440, 790, { crop: CROP.mmPanel, label: 'MetaMask' });
+      const h = appear(lt, 1.0, 0.4);
+      withAlpha(h, () => {
+        g.strokeStyle = C.bad; g.lineWidth = 4;
+        g.strokeRect(r.x + CROP.mmTo.x * r.s - 6, r.y + CROP.mmTo.y * r.s - 6, CROP.mmTo.w * r.s + 12, CROP.mmTo.h * r.s + 12);
+      });
+    });
+    caption('Without WebSeal', C.bad, 'You typed your own address. The wallet is asked to pay the attacker.', appear(lt, 0.2));
+  },
+  check(lt, d) {
+    // one at a time, full width, so the terminal text stays readable
+    const [out, k] = swap(lt, 1.45);
+    const a = appear(lt, 0.0, 0.45);
+    withAlpha(a * out, () => shot(IMG.verifyBad, 120, 200 + rise(a), 1680, 700, { frame: false, label: 'webseal verify · the tampered site' }));
+    withAlpha(k, () => shot(IMG.reproduce, 120, 160, 1680, 740, { frame: false, label: 'webseal reproduce · from github.com/sm-xd/webseal' }));
+    captionSwap('Anyone can check', C.accent, 'Anyone can verify a site from the command line.', 'And rebuild it from the public repo to the same bytes.', lt, 1.45);
+  },
+  crops(lt) {
+    withAlpha(appear(lt, 0), () => kicker('CROPS', 120, 300));
+    const items = ['No WebSeal server', 'No trackers', 'Open source · MIT', 'Fails closed'];
+    items.forEach((s, i) => {
+      const a = appear(lt, 0.05 + i * 0.14, 0.4);
+      withAlpha(a, () => {
+        const x = 120 + i * 420, y = 340 + rise(a, 12);
+        box(x, y, i < 3 ? 422 : 420, 220);
+        g.fillStyle = i === 3 ? C.accent : C.ok; g.fillRect(x, y, 420, 6);
+        wrap(s, x + 32, y + 120, 360, 50, { size: 42, weight: 700 });
+      });
+    });
+  },
+  close(lt) {
+    const a1 = appear(lt, 0.0, 0.5), a2 = appear(lt, 0.1, 0.5), a3 = appear(lt, 0.45, 0.5);
+    withAlpha(a1, () => g.drawImage(IMG.icon, 120, 270 + rise(a1), 104, 104));
+    withAlpha(a2, () => text('WebSeal', 112, 540 + rise(a2), { size: 160, weight: 800, spacing: -5 }));
+    rule(120, 588, 900 * easeOut((lt - 0.25) / 0.6));
+    withAlpha(a3, () => {
+      text('Check the frontend before you sign.', 120, 670, { size: 50 });
+      text('GITHUB.COM/SM-XD/WEBSEAL  ·  SMXREDS.ETH (SEPOLIA)  ·  MIT', 120, 760, { size: 24, weight: 600, family: MONO, color: C.muted, spacing: 3 });
+    });
+  },
+};
+
+window.drawFrame = (t) => {
+  g.globalAlpha = 1;
+  g.fillStyle = C.paper;
+  g.fillRect(0, 0, W, H);
+  // Scenes never overlap: the outgoing one fades out over its last FADE_OUT s, the next fades in
+  // over its first FADE_IN s (an overlapping crossfade ghosts two layouts on top of each other).
+  SCENES.forEach((s, i) => {
+    const last = i === SCENES.length - 1;
+    if (t < s.start || t >= (last ? s.end + 1 : s.end)) return;
+    const fin = i === 0 ? 1 : clamp((t - s.start) / FADE_IN);
+    const fout = last ? 1 : clamp((s.end - t) / FADE_OUT);
+    withAlpha(Math.min(fin, fout), () => DRAW[s.id](t - s.start, s.end - s.start));
+  });
+};
+
+/* ---------- soundtrack: synthesized offline, same SCENES table ---------- */
+const midi = (n) => 440 * Math.pow(2, (n - 69) / 12);
+function rng(seed) { let s = seed >>> 0; return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296); }
+
+window.renderAudio = async () => {
+  const SR = 48000;
+  const ctx = new OfflineAudioContext(2, SR * DURATION, SR);
+  const at = (id) => SCENES.find((s) => s.id === id).start;
+
+  // bus -> (dry + reverb) -> compressor -> master
+  const master = ctx.createGain();
+  master.gain.setValueAtTime(0, 0);
+  master.gain.linearRampToValueAtTime(0.9, 0.8);
+  master.gain.setValueAtTime(0.9, DURATION - 1.6);
+  master.gain.linearRampToValueAtTime(0, DURATION - 0.05);
+  const comp = ctx.createDynamicsCompressor();
+  comp.threshold.value = -18; comp.ratio.value = 3;
+  comp.connect(master); master.connect(ctx.destination);
+  const bus = ctx.createGain(); bus.connect(comp);
+  const verb = ctx.createConvolver();
+  { // a deterministic noise-tail impulse response
+    const len = SR * 3, ir = ctx.createBuffer(2, len, SR), r = rng(7);
+    for (let ch = 0; ch < 2; ch++) { const d = ir.getChannelData(ch); for (let i = 0; i < len; i++) d[i] = (r() * 2 - 1) * Math.pow(1 - i / len, 2.6); }
+    verb.buffer = ir;
+  }
+  const wet = ctx.createGain(); wet.gain.value = 0.32;
+  bus.connect(verb); verb.connect(wet); wet.connect(comp);
+
+  function voice(freq, t0, t1, { type = 'triangle', level = 0.05, attack = 0.7, release = 0.9, detune = 0, pan = 0, cutoff = 1400 } = {}) {
+    const o = ctx.createOscillator(); o.type = type; o.frequency.value = freq; o.detune.value = detune;
+    const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = cutoff; f.Q.value = 0.4;
+    const gn = ctx.createGain(); gn.gain.setValueAtTime(0, t0);
+    gn.gain.linearRampToValueAtTime(level, t0 + attack);
+    gn.gain.setValueAtTime(level, Math.max(t0 + attack, t1));
+    gn.gain.linearRampToValueAtTime(0, t1 + release);
+    const p = ctx.createStereoPanner(); p.pan.value = pan;
+    o.connect(f); f.connect(gn); gn.connect(p); p.connect(bus);
+    o.start(t0); o.stop(t1 + release + 0.05);
+  }
+  function chord(notes, bass, t0, t1, opts = {}) {
+    notes.forEach((n, i) => {
+      const pan = (i / Math.max(1, notes.length - 1) - 0.5) * 0.6;
+      voice(midi(n), t0, t1, { level: 0.034, detune: -5, pan, ...opts });
+      voice(midi(n), t0, t1, { level: 0.024, detune: 6, type: 'sine', pan: -pan, ...opts });
+    });
+    voice(midi(bass), t0, t1, { type: 'sine', level: 0.07, attack: 0.5, release: 1.0, cutoff: 400 });
+  }
+  function ping(n, t, level = 0.06, dur = 0.9) { // soft bell for scene beats
+    const o = ctx.createOscillator(); o.type = 'sine'; o.frequency.value = midi(n);
+    const gn = ctx.createGain(); gn.gain.setValueAtTime(0, t); gn.gain.linearRampToValueAtTime(level, t + 0.008); gn.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(gn); gn.connect(bus); o.start(t); o.stop(t + dur + 0.05);
+  }
+  function thump(t, level = 0.22) { // low heartbeat for the attack scenes
+    const o = ctx.createOscillator(); o.type = 'sine';
+    o.frequency.setValueAtTime(90, t); o.frequency.exponentialRampToValueAtTime(42, t + 0.22);
+    const gn = ctx.createGain(); gn.gain.setValueAtTime(0, t); gn.gain.linearRampToValueAtTime(level, t + 0.01); gn.gain.exponentialRampToValueAtTime(0.0001, t + 0.38);
+    o.connect(gn); gn.connect(comp); o.start(t); o.stop(t + 0.45);
+  }
+  function fall(t) { // the alert when the file is changed
+    const o = ctx.createOscillator(); o.type = 'triangle';
+    o.frequency.setValueAtTime(midi(69), t); o.frequency.exponentialRampToValueAtTime(midi(57), t + 0.5);
+    const gn = ctx.createGain(); gn.gain.setValueAtTime(0, t); gn.gain.linearRampToValueAtTime(0.07, t + 0.02); gn.gain.exponentialRampToValueAtTime(0.0001, t + 0.9);
+    o.connect(gn); gn.connect(bus); o.start(t); o.stop(t + 1);
+  }
+
+  // harmony: calm until the attack, tense through "without", resolved from "check"
+  chord([57, 60, 64, 71], 45, 0, at('how'));                 // Am9
+  chord([53, 57, 60, 64], 41, at('how'), at('ensv2'));       // Fmaj7
+  chord([55, 60, 64, 67], 48, at('ensv2'), at('clean'));     // C
+  chord([55, 59, 62, 64], 43, at('clean'), at('attack'));    // G6
+  chord([57, 60, 63], 45, at('attack'), at('without'), { cutoff: 900 });      // A dim: tension
+  chord([53, 58, 62, 64], 46, at('without'), at('check'), { cutoff: 900 });   // Bb(#11)
+  chord([53, 57, 60, 67], 41, at('check'), at('crops'));     // Fadd9
+  chord([55, 60, 62, 64], 48, at('crops'), DURATION - 0.6, { release: 1.2 });  // Cadd9, the end
+
+  // beats, on the scene changes
+  ping(76, at('intro') + 0.15, 0.05, 1.6);
+  ping(72, at('problem'), 0.035);
+  ping(79, at('how'), 0.04); ping(83, at('how') + 0.35, 0.03); ping(86, at('how') + 0.7, 0.03); // the three cells
+  ping(81, at('ensv2'), 0.04);
+  ping(84, at('clean'), 0.05); ping(91, at('clean') + 0.12, 0.035);                              // verified
+  fall(at('attack'));
+  for (let t = at('attack') + 0.05; t < at('check') - 0.2; t += 1.0) thump(t, t < at('blocked') ? 0.16 : 0.2);
+  ping(64, at('blocked'), 0.06, 1.2); ping(60, at('blocked') + 0.16, 0.06, 1.4);               // blocked
+  ping(61, at('without') + 1.0, 0.05, 1.2);                                                      // the attacker address
+  ping(84, at('check'), 0.05); ping(91, at('check') + 0.12, 0.035);                              // reproduced
+  [0, 1, 2, 3].forEach((i) => ping(79 + [0, 2, 4, 7][i], at('crops') + 0.05 + i * 0.14, 0.03));
+  ping(72, at('close'), 0.05, 2.2); ping(79, at('close') + 0.1, 0.035, 2.2);
+
+  const buf = await ctx.startRendering();
+  // 16-bit PCM WAV
+  const n = buf.length, ch = 2, bytes = 44 + n * ch * 2, out = new DataView(new ArrayBuffer(bytes));
+  const str = (o, s) => [...s].forEach((c, i) => out.setUint8(o + i, c.charCodeAt(0)));
+  str(0, 'RIFF'); out.setUint32(4, bytes - 8, true); str(8, 'WAVE'); str(12, 'fmt ');
+  out.setUint32(16, 16, true); out.setUint16(20, 1, true); out.setUint16(22, ch, true); out.setUint32(24, SR, true);
+  out.setUint32(28, SR * ch * 2, true); out.setUint16(32, ch * 2, true); out.setUint16(34, 16, true);
+  str(36, 'data'); out.setUint32(40, n * ch * 2, true);
+  const L = buf.getChannelData(0), R = buf.getChannelData(1);
+  let peak = 0;
+  for (let i = 0; i < n; i++) peak = Math.max(peak, Math.abs(L[i]), Math.abs(R[i]));
+  const norm = peak > 0 ? 0.89 / peak : 1; // normalize to about -1 dBFS
+  for (let i = 0, o = 44; i < n; i++, o += 4) {
+    out.setInt16(o, clamp(L[i] * norm, -1, 1) * 32767, true);
+    out.setInt16(o + 2, clamp(R[i] * norm, -1, 1) * 32767, true);
+  }
+  const u8 = new Uint8Array(out.buffer);
+  let bin = '';
+  for (let i = 0; i < u8.length; i += 0x8000) bin += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+  return { wav: btoa(bin), peak };
+};
+</script>
+</body>
+</html>

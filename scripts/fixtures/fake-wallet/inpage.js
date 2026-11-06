@@ -4,6 +4,9 @@
 (() => {
   const calls = [];
   window.__extWalletCalls = calls;
+  // Each request with its parameters, so a test can show what the wallet was asked to sign.
+  const log = [];
+  window.__extWalletLog = log;
   // Plausible answers so a real dApp (viem) runs its whole flow. No keys, nothing is sent anywhere.
   const ACCOUNT = '0x7e5f4552091a69125d5dfcb7b8c2659029395bdf';
   const answers = {
@@ -17,8 +20,13 @@
   };
   const provider = {
     isExtWallet: true,
-    request: async ({ method }) => {
+    request: async ({ method, params }) => {
       calls.push(method);
+      try {
+        log.push({ method, params: JSON.parse(JSON.stringify(params ?? null)) });
+      } catch {
+        log.push({ method, params: null });
+      }
       window.dispatchEvent(new CustomEvent('testwallet:request', { detail: method }));
       return method in answers ? answers[method] : null;
     },
@@ -29,7 +37,7 @@
   // Like many wallets, also expose the provider under vendor names.
   window.coinbaseWalletExtension = provider;
   window.phantom = { ethereum: provider, solana: {} };
-  const announce = () => window.dispatchEvent(new CustomEvent('eip6963:announceProvider', { detail: Object.freeze({ info: { uuid: 'x', name: 'Fake', icon: 'data:,', rdns: 'test.fake' }, provider }) }));
+  const announce = () => window.dispatchEvent(new CustomEvent('eip6963:announceProvider', { detail: Object.freeze({ info: { uuid: 'x', name: 'Test Wallet', icon: 'data:,', rdns: 'test.fake' }, provider }) }));
   window.addEventListener('eip6963:requestProvider', announce);
   announce();
 })();

@@ -1,0 +1,736 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>WebSeal demo video</title>
+<!--
+  The 2-minute WebSeal video, drawn on a canvas by code. Intro and outro are animated titles with
+  music; the middle is the recorded demo (scripts/video/capture.mjs): real footage of the wagmi app
+  with WebSeal, the real CLI output typed out, the real MetaMask screenshots.
+  drawFrame(t) depends only on t (images are awaited first), so any frame renders identically.
+  renderAudio() builds the soundtrack from the same timeline, so sound lands on the picture.
+  Design: video-assets/colors.md (dark), fonts.md (Segoe UI, Cascadia Mono).
+-->
+<style>html, body { margin: 0; background: #0b0c0e; } canvas { display: block; }</style>
+</head>
+<body>
+<canvas id="c" width="2560" height="1440"></canvas>
+<script>
+const DW = 1920, DH = 1080;                 // layout space
+const CW = 2560, CH = 1440, S = CW / DW;    // output pixels
+const DURATION = 120;
+
+const C = { paper: '#0b0c0e', cell: '#15171b', ink: '#eceef2', muted: '#9aa0ab', line: '#eceef2', accent: '#5b7bff', ok: '#1a8f3c', bad: '#b00020', hatch: '#2a2d33', amber: '#e0a400', termBg: '#0b0c0e', termBar: '#101114', okText: '#4ade80', badText: '#ff6b6b' };
+const SANS = '"Segoe UI", ui-sans-serif, system-ui, sans-serif';
+const MONO = '"Cascadia Mono", ui-monospace, Consolas, monospace';
+
+/* ---------- data ---------- */
+let F; // footage.json
+const SHOTS = {
+  icon: '/video-assets/icons/icon512.png',
+  ext: '/video-assets/screenshots/wagmi-flow/05-ext-installed.png',
+  popupClean: '/video-assets/footage/popup-clean.png',
+  popupBad: '/video-assets/footage/popup-tampered.png',
+  mmClean: '/video-assets/screenshots/metamask/mm-02-confirm-clean.png',
+  mmBlocked: '/video-assets/screenshots/metamask/mm-03-tampered-no-popup.png',
+  mmAttacker: '/video-assets/screenshots/metamask/mm-04-confirm-attacker.png',
+};
+// crops of the hand-taken MetaMask shots: no tab bar, profile icon or account address
+const CROP = {
+  mmPanel: { x: 1460, y: 118, w: 452, h: 893 },
+  mmTo: { x: 20, y: 344, w: 396, h: 68 },            // inside mmPanel
+  mmBanner: { x: 20, y: 110, w: 1862, h: 113 },
+  mmBlockedSend: { x: 707, y: 763, w: 980, h: 152 },
+  extCard: { x: 1512, y: 290, w: 798, h: 320 },      // the WebSeal card on chrome://extensions (2x)
+  extToggle: { x: 2244, y: 561 },
+};
+const IMG = {};
+const cache = new Map(); // footage frames, loaded on demand
+function load(src) {
+  if (cache.has(src)) return cache.get(src);
+  const p = new Promise((res, rej) => { const i = new Image(); i.onload = () => i.decode().then(() => res(i), () => res(i)); i.onerror = () => rej(new Error('missing ' + src)); i.src = src; });
+  cache.set(src, p);
+  if (cache.size > 60) cache.delete(cache.keys().next().value);
+  return p;
+}
+window.ready = (async () => {
+  F = await (await fetch('/video-assets/footage/footage.json')).json();
+  await Promise.all(Object.entries(SHOTS).map(async ([k, s]) => (IMG[k] = await load(s))));
+  await Promise.all([document.fonts.load(`800 100px "Segoe UI"`), document.fonts.load(`400 30px "Segoe UI"`), document.fonts.load(`600 22px "Cascadia Mono"`), document.fonts.load(`400 22px "Cascadia Mono"`)]);
+  build();
+})();
+
+/* ---------- helpers ---------- */
+const cv = document.getElementById('c');
+const g = cv.getContext('2d');
+const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
+const easeOut = (x) => 1 - Math.pow(1 - clamp(x), 3);
+const inOut = (x) => { x = clamp(x); return x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2; };
+const backOut = (x) => { x = clamp(x); const c = 1.4; return 1 + (c + 1) * Math.pow(x - 1, 3) + c * Math.pow(x - 1, 2); };
+const appear = (lt, at, d = 0.45) => easeOut((lt - at) / d);
+const swap = (lt, at, d = 0.5) => [1 - inOut((lt - at) / (d / 2)), inOut((lt - at - d / 2) / (d / 2))];
+const lerp = (a, b, k) => a + (b - a) * k;
+function withAlpha(a, fn) { if (a <= 0.002) return; g.save(); g.globalAlpha *= a; fn(); g.restore(); }
+const rise = (a, px = 18) => (1 - a) * px;
+const font = (size, weight = 400, fam = SANS) => `${weight} ${size}px ${fam}`;
+function text(s, x, y, { size = 32, weight = 400, family = SANS, color = C.ink, align = 'left', spacing = 0, maxW } = {}) {
+  g.font = font(size, weight, family); g.letterSpacing = spacing + 'px';
+  if (maxW) { let sz = size; while (g.measureText(s).width > maxW && sz > 12) g.font = font(--sz, weight, family); }
+  g.fillStyle = color; g.textAlign = align; g.textBaseline = 'alphabetic'; g.fillText(s, x, y); g.letterSpacing = '0px';
+}
+function wrap(s, x, y, maxW, lineH, o) {
+  g.font = font(o.size, o.weight ?? 400, o.family ?? SANS);
+  let line = '', yy = y;
+  for (const w of s.split(' ')) { const t = line ? line + ' ' + w : w; if (g.measureText(t).width > maxW && line) { text(line, x, yy, o); line = w; yy += lineH; } else line = t; }
+  if (line) text(line, x, yy, o);
+}
+const kicker = (s, x, y, color = C.muted, size = 22) => text(s.toUpperCase(), x, y, { size, weight: 600, family: MONO, color, spacing: 3 });
+const rule = (x, y, w, color = C.line, h = 2) => { g.fillStyle = color; g.fillRect(x, y, w, h); };
+function box(x, y, w, h, { fill = C.cell, stroke = C.line, lw = 2 } = {}) {
+  if (fill) { g.fillStyle = fill; g.fillRect(x, y, w, h); }
+  if (stroke) { g.strokeStyle = stroke; g.lineWidth = lw; g.strokeRect(x + lw / 2, y + lw / 2, w - lw, h - lw); }
+}
+function img(im, x, y, w, h, crop) {
+  const c = crop ?? { x: 0, y: 0, w: im.naturalWidth, h: im.naturalHeight };
+  g.drawImage(im, c.x, c.y, c.w, c.h, x, y, w, h);
+}
+/** An image (or crop) contained in a box, in a 2px frame. Returns where it landed. */
+function shot(im, bx, by, bw, bh, { crop, frame = true, label } = {}) {
+  const c = crop ?? { x: 0, y: 0, w: im.naturalWidth, h: im.naturalHeight };
+  const s = Math.min(bw / c.w, bh / c.h), w = c.w * s, h = c.h * s;
+  img(im, bx, by, w, h, c);
+  if (frame) { g.strokeStyle = C.line; g.lineWidth = 2; g.strokeRect(bx - 1, by - 1, w + 2, h + 2); }
+  if (label) kicker(label, bx, by - 16);
+  return { x: bx, y: by, w, h, s };
+}
+function caption(label, color, line, a = 1) {
+  withAlpha(a, () => {
+    rule(120, 952, 1680);
+    text(label.toUpperCase(), 120, 1010, { size: 22, weight: 600, family: MONO, color, spacing: 3, maxW: 290 });
+    text(line, 440, 1012, { size: 34, weight: 500, maxW: 1360 });
+  });
+}
+/** Captions that change at given local times, each swap sequential (out, then in). */
+function captions(lt, label, color, list) {
+  list.forEach(([at, s], i) => {
+    const next = list[i + 1]?.[0] ?? Infinity;
+    const inA = i === 0 ? appear(lt, at, 0.4) : swap(lt, at)[1];
+    const outA = next === Infinity ? 1 : swap(lt, next)[0];
+    caption(label, color, s, Math.min(inA, outA));
+  });
+}
+function highlightBox(x, y, w, h, color, a, pulse = 0) {
+  withAlpha(a, () => { g.strokeStyle = color; g.lineWidth = 4 + pulse * 3; g.strokeRect(x - 6, y - 6, w + 12, h + 12); });
+}
+function cursor(x, y, press = 0) {
+  g.save(); g.translate(x, y); g.scale(1.25 - press * 0.12, 1.25 - press * 0.12);
+  g.beginPath(); g.moveTo(0, 0); g.lineTo(0, 26); g.lineTo(7, 20); g.lineTo(12, 31); g.lineTo(17, 29); g.lineTo(12, 18); g.lineTo(21, 18); g.closePath();
+  g.fillStyle = '#ffffff'; g.fill(); g.lineWidth = 2; g.strokeStyle = '#0b0c0e'; g.stroke(); g.restore();
+}
+function ripple(x, y, k) { if (k <= 0 || k >= 1) return; withAlpha(1 - k, () => { g.strokeStyle = C.accent; g.lineWidth = 4; g.beginPath(); g.arc(x, y, 10 + 46 * easeOut(k), 0, Math.PI * 2); g.stroke(); }); }
+
+/* ---------- terminal: real CLI output, typed out ---------- */
+const TERM = { size: 23, lineH: 33 };
+const PAINT = [
+  [/^(PS [^>]*>)/, C.accent],
+  [/\b(VERIFIED|REPRODUCED:[^\n]*|REPRODUCED|readback ok|every served file matches the manifest)/, C.okText],
+  [/^\s+(ok|same)\b/, C.okText],
+  [/\b(FAILED|MISMATCH|DIFFERENT:[^\n]*|tampered|warning)\b/, C.badText],
+  [/(0xbad0000000000000000000000000000000000bad)/, C.badText],
+  [/(# .*)$/, C.muted],
+];
+function paintLine(s) { // -> [{text, color}]
+  const marks = [];
+  for (const [re, color] of PAINT) { const m = re.exec(s); if (m) { const i = s.indexOf(m[1], m.index); marks.push({ a: i, b: i + m[1].length, color }); } }
+  marks.sort((p, q) => p.a - q.a);
+  const out = []; let pos = 0;
+  for (const m of marks) { if (m.a < pos) continue; if (m.a > pos) out.push({ text: s.slice(pos, m.a), color: C.ink }); out.push({ text: s.slice(m.a, m.b), color: m.color }); pos = m.b; }
+  if (pos < s.length) out.push({ text: s.slice(pos), color: C.ink });
+  return out;
+}
+/** Plans a terminal session: commands typed, then their output line by line. */
+function session(items, { cols = 118 } = {}) {
+  const lines = []; let t = 0;
+  for (const it of items) {
+    if (it.wait) { t += it.wait; continue; }
+    if (it.cmd) {
+      const full = 'PS Z:\\ethmumbai> ' + it.cmd;
+      const typeDur = Math.min(1.7, it.cmd.length / 48);
+      lines.push({ text: full, start: t, typeFrom: 17, typeDur, cmd: true });
+      t += typeDur + 0.35;
+    }
+    if (it.note) { lines.push({ text: '# ' + it.note, start: t, spin: it.spin ?? 0 }); t += it.spin ?? 0.4; }
+    for (const raw of (it.out ?? '').split('\n')) {
+      for (const part of wrapCols(raw, cols)) { lines.push({ text: part, start: t }); t += it.lineDelay ?? 0.06; }
+    }
+    t += 0.25;
+  }
+  return { lines, dur: t };
+}
+function wrapCols(s, cols) {
+  if (s.length <= cols) return [s];
+  const out = [s.slice(0, cols)]; let rest = s.slice(cols);
+  while (rest.length) { out.push('          ' + rest.slice(0, cols - 10)); rest = rest.slice(cols - 10); }
+  return out;
+}
+function terminal(x, y, w, h, sess, lt, { title = 'terminal', hl = [] } = {}) {
+  box(x, y, w, h, { fill: C.termBg, stroke: C.hatch });
+  g.fillStyle = C.termBar; g.fillRect(x + 2, y + 2, w - 4, 40);
+  text(title.toUpperCase(), x + 18, y + 29, { size: 15, weight: 600, family: SANS, color: C.muted, spacing: 1.5 });
+  g.save(); g.beginPath(); g.rect(x, y + 42, w, h - 44); g.clip();
+  g.font = font(TERM.size, 400, MONO);
+  const cw = g.measureText('M').width;
+  const visible = sess.lines.filter((l) => lt >= l.start);
+  const maxLines = Math.floor((h - 70) / TERM.lineH);
+  const shown = visible.slice(Math.max(0, visible.length - maxLines));
+  const pos = [];
+  shown.forEach((l, i) => {
+    const yy = y + 80 + i * TERM.lineH;
+    let s = l.text;
+    if (l.cmd) s = s.slice(0, l.typeFrom + Math.floor((s.length - l.typeFrom) * clamp((lt - l.start) / l.typeDur)));
+    if (l.spin && lt < l.start + l.spin) s += ' ' + '|/-\\'[Math.floor(lt * 10) % 4];
+    let xx = x + 22;
+    for (const seg of paintLine(s)) { g.fillStyle = seg.color; g.font = font(TERM.size, seg.color === C.ink || seg.color === C.muted ? 400 : 600, MONO); g.fillText(seg.text, xx, yy); xx += cw * seg.text.length; }
+    const typing = l.cmd && lt < l.start + l.typeDur + 0.3;
+    if (typing && Math.floor(lt * 3) % 2 === 0) { g.fillStyle = C.ink; g.fillRect(xx + 2, yy - 20, cw * 0.6, 26); }
+    pos.push({ l, x: x + 22, y: yy, cw, s });
+  });
+  g.restore();
+  for (const h0 of hl) { // boxes around matching text once it is on screen
+    const a = appear(lt, h0.at, 0.3);
+    if (a <= 0) continue;
+    for (const p of pos) { const i = p.s.indexOf(h0.text); if (i >= 0) highlightBox(p.x + i * p.cw, p.y - 24, h0.text.length * p.cw, 32, h0.color ?? C.accent, a, h0.pulse ? 0.5 + 0.5 * Math.sin(lt * 8) : 0); }
+  }
+}
+
+/* ---------- browser frame + footage ---------- */
+const FR = { x: 120, y: 112, w: 1240 };
+FR.top = 44; FR.pw = FR.w; FR.ph = FR.w / 1.6; FR.sc = FR.w / 1280;
+const page2d = (bx, by) => ({ x: FR.x + bx * FR.sc, y: FR.y + FR.top + by * FR.sc });
+function footageFrame(seq, ft) {
+  const fr = F.seqs[seq].frames; let lo = 0, hi = fr.length - 1;
+  while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (fr[mid].t <= ft * 1000) lo = mid; else hi = mid - 1; }
+  return fr[lo];
+}
+const ev = (seq, name) => F.seqs[seq].events.find((e) => e.name === name);
+const fp = (seq) => (F.seqs[seq].firstPaint ?? 0) / 1000; // first painted frame: start footage there, never on a blank tab
+/** Footage playback with holds and skips: segments play footage [from,to] over [at, at+dur]. */
+function ftAt(segs, lt) { let ft = segs[0].from; for (const s of segs) { if (lt < s.at) break; ft = s.from + (s.to - s.from) * clamp((lt - s.at) / s.dur); } return ft; }
+function ltOf(segs, ft) { for (const s of segs) if (s.to > s.from && ft >= s.from && ft <= s.to) return s.at + ((ft - s.from) / (s.to - s.from)) * s.dur; return null; }
+function browser(seq, ft, frameImg, { badge = true } = {}) {
+  const fr = footageFrame(seq, ft);
+  box(FR.x, FR.y, FR.w, FR.top + FR.ph, { fill: C.cell });
+  // address bar
+  box(FR.x + 16, FR.y + 8, 520, 28, { fill: C.paper, stroke: C.hatch });
+  text('http://localhost:4174', FR.x + 30, FR.y + 28, { size: 17, family: MONO, color: C.muted });
+  if (badge) {
+    const bx = FR.x + FR.w - 64;
+    g.drawImage(IMG.icon, bx, FR.y + 8, 28, 28);
+    const b = fr.badge;
+    if (b) {
+      const col = b === '\u2713' ? C.ok : b === '\u2717' ? C.bad : C.amber;
+      g.fillStyle = col; g.fillRect(bx + 18, FR.y + 20, 26, 20);
+      text(b, bx + 31, FR.y + 36, { size: 15, weight: 700, align: 'center', color: '#fff' });
+    }
+  } else text('WebSeal off', FR.x + FR.w - 24, FR.y + 29, { size: 16, family: MONO, color: C.badText, align: 'right' });
+  if (frameImg) g.drawImage(frameImg, FR.x, FR.y + FR.top, FR.pw, FR.ph);
+  g.strokeStyle = C.line; g.lineWidth = 2; g.strokeRect(FR.x - 1, FR.y - 1, FR.w + 2, FR.top + FR.ph + 2);
+  return fr;
+}
+/** The pointer, moving between the recorded clicks; ripple on each click. */
+function pointer(seq, ft) {
+  const pts = ['click-address', 'click-value', 'click-send'].map((n) => ev(seq, n)).filter(Boolean).map((e) => ({ t: e.t / 1000, ...page2d(e.box.x + e.box.width / 2, e.box.y + e.box.height / 2) }));
+  if (!pts.length || ft < pts[0].t - 1.0) return;
+  let prev = { t: pts[0].t - 1.0, ...page2d(900, 380) }, pos = prev;
+  for (const p of pts) {
+    if (ft >= p.t) { prev = p; pos = p; continue; }
+    const k = inOut((ft - (p.t - 0.55)) / 0.55);
+    pos = { x: lerp(prev.x, p.x, k), y: lerp(prev.y, p.y, k) }; break;
+  }
+  let press = 0;
+  for (const p of pts) { const k = (ft - p.t) / 0.45; ripple(p.x, p.y, k); if (ft >= p.t && ft < p.t + 0.12) press = 1; }
+  cursor(pos.x + 4, pos.y + 4, press);
+}
+
+/* ---------- camera (zoom into the layout, under the captions) ---------- */
+function camera(keys, lt) { // keys: [[t, cx, cy, z], ...]
+  let k0 = keys[0], k1 = keys[0];
+  for (let i = 0; i < keys.length; i++) { if (lt >= keys[i][0]) { k0 = keys[i]; k1 = keys[i + 1] ?? keys[i]; } }
+  const span = k1[0] - k0[0], k = span > 0 ? inOut((lt - k0[0]) / Math.min(span, 0.9)) : 0;
+  return { cx: lerp(k0[1], k1[1], k), cy: lerp(k0[2], k1[2], k), z: lerp(k0[3], k1[3], k) };
+}
+function withCamera(cam, fn) { g.save(); g.translate(DW / 2, DH / 2); g.scale(cam.z, cam.z); g.translate(-cam.cx, -cam.cy); fn(); g.restore(); }
+const HOME = [960, 540, 1];
+
+/* ---------- timeline ---------- */
+let SCENES = [], CUES = [];
+const CH_TITLES = ['Release', 'ENSv2 key', 'Clean page', 'The attack', 'Blocked', 'Without WebSeal', 'Anyone can check'];
+function chapterHeader(i, lt, sceneDur) {
+  const a = appear(lt, 0, 0.4);
+  withAlpha(a, () => {
+    kicker(`Demo \u00b7 ${String(i + 1).padStart(2, '0')} / 07`, 120, 64, C.accent);
+    text(CH_TITLES[i], 420, 66, { size: 28, weight: 700 });
+    const segW = 1680 / 7;
+    for (let k = 0; k < 7; k++) { g.fillStyle = k < i ? C.ink : k === i ? C.hatch : C.cell; g.fillRect(120 + k * segW + 2, 82, segW - 4, 6); }
+    g.fillStyle = C.accent; g.fillRect(120 + i * segW + 2, 82, (segW - 4) * clamp(lt / sceneDur), 6);
+  });
+}
+
+function build() {
+  const T = F.terminal;
+  const cue = (t, type, extra) => CUES.push({ t, type, ...extra });
+  let t = 0;
+  const add = (id, dur, draw, setup) => { const s = { id, start: t, end: t + dur, draw }; SCENES.push(s); setup?.(s); t += dur; return s; };
+
+  /* INTRO (music) */
+  add('logo', 6, (lt) => {
+    // a faint ruled grid that draws itself
+    g.strokeStyle = C.hatch; g.lineWidth = 2;
+    for (let i = 0; i <= 8; i++) { const k = easeOut((lt + 0.6 - i * 0.06) / 0.9); g.beginPath(); g.moveTo(120 + i * 210, 120); g.lineTo(120 + i * 210, 120 + 840 * k); g.stroke(); }
+    const ai = backOut((lt + 0.25) / 0.7);
+    withAlpha(clamp((lt + 0.3) / 0.4), () => { const s = 150 * ai; g.drawImage(IMG.icon, 195 - s / 2, 330 - s / 2, s, s); });
+    const w = easeOut((lt - 0.35) / 0.8);
+    g.save(); g.beginPath(); g.rect(100, 380, 1400 * w + 1, 260); g.clip();
+    text('WebSeal', 110, 590, { size: 210, weight: 800, spacing: -7 }); g.restore();
+    rule(120, 640, 980 * easeOut((lt - 1.0) / 0.8));
+    const a3 = appear(lt, 1.4, 0.6);
+    withAlpha(a3, () => text('Is this the code they shipped?', 120, 730 + rise(a3), { size: 56 }));
+    const a4 = appear(lt, 2.2, 0.6);
+    withAlpha(a4, () => text('Frontend integrity for dApps, anchored on ENS.', 120, 800 + rise(a4), { size: 34, color: C.muted }));
+  }, (s) => { cue(s.start + 0.05, 'chime'); cue(s.start + 1.4, 'soft'); });
+
+  add('problem', 8, (lt) => {
+    kicker('The problem', 120, 150);
+    const k = easeOut((lt - 0.2) / 1.4);
+    const a = appear(lt, 0.1, 0.4);
+    withAlpha(a, () => text('$' + (1.5 * k).toFixed(1) + 'B', 112, 430, { size: 250, weight: 800, color: C.bad, spacing: -9 }));
+    const b = appear(lt, 0.8, 0.6);
+    withAlpha(b, () => { text('February 2025', 120, 530 + rise(b), { size: 44, weight: 700 }); wrap('One JavaScript file was changed on Safe{Wallet}\u2019s host. The repo was clean. The contracts were fine.', 120, 590 + rise(b), 820, 52, { size: 38 }); });
+    // a site's files; one of them changes
+    const cols = 8, rows = 5, cs = 86, gx = 1010, gy = 190;
+    for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+      const i = r * cols + c, a2 = appear(lt, 0.4 + i * 0.025, 0.35);
+      const bad = i === 19 && lt > 3.2;
+      withAlpha(a2, () => {
+        const flash = bad ? 0.5 + 0.5 * Math.sin((lt - 3.2) * 6) : 0;
+        box(gx + c * (cs + 12), gy + r * (cs + 12) + rise(a2, 10), cs, cs, { fill: bad ? C.bad : C.cell, stroke: bad ? '#ff6b6b' : C.hatch });
+        g.fillStyle = bad ? '#ffffff' : C.hatch;
+        for (let l = 0; l < 3; l++) g.fillRect(gx + c * (cs + 12) + 16, gy + r * (cs + 12) + 24 + l * 16 + rise(a2, 10), [50, 36, 44][l], 5);
+        if (bad && flash > 0.9) highlightBox(gx + c * (cs + 12), gy + r * (cs + 12), cs, cs, '#ff6b6b', 0.6);
+      });
+    }
+    const c2 = appear(lt, 3.4, 0.5);
+    withAlpha(c2, () => kicker('one file changed on the server', gx, gy + rows * (cs + 12) + 40, C.badText));
+    rule(120, 760, 1680 * easeOut((lt - 4.2) / 0.8));
+    const d = appear(lt, 4.8, 0.6);
+    withAlpha(d, () => text('Your wallet signs whatever the page asks for.', 120, 850 + rise(d), { size: 50, color: C.ink }));
+  }, (s) => { cue(s.start + 3.2, 'alertSoft'); });
+
+  add('how', 8, (lt) => {
+    kicker('How it works', 120, 150);
+    const nodes = [
+      { x: 120, t: 0.3, k: '01 \u00b7 Release', h: 'CI hashes every file', sub: 'into a manifest' },
+      { x: 680, t: 1.6, k: '02 \u00b7 Anchor', h: 'The fingerprint goes on ENS', sub: 'smxreds.eth \u00b7 text record \u201cwebseal\u201d' },
+      { x: 1240, t: 2.9, k: '03 \u00b7 Check', h: 'The browser checks every file', sub: 'a mismatch blocks signing' },
+    ];
+    nodes.forEach((n, i) => {
+      const a = backOut((lt - n.t) / 0.6);
+      withAlpha(clamp((lt - n.t) / 0.3), () => {
+        g.save(); g.translate(n.x + 280, 360); g.scale(0.9 + 0.1 * a, 0.9 + 0.1 * a); g.translate(-(n.x + 280), -360);
+        box(n.x, 200, 560, 320);
+        kicker(n.k, n.x + 32, 252, C.accent);
+        wrap(n.h, n.x + 32, 318, 490, 52, { size: 42, weight: 700 });
+        text(n.sub, n.x + 32, 480, { size: 26, color: C.muted, maxW: 500 });
+        g.restore();
+      });
+      if (i < 2) { // a dashed link that flows
+        const k = easeOut((lt - n.t - 0.6) / 0.6);
+        if (k > 0) { g.save(); g.setLineDash([14, 10]); g.lineDashOffset = -lt * 60; g.strokeStyle = C.accent; g.lineWidth = 4; g.beginPath(); g.moveTo(n.x + 560, 600); g.lineTo(n.x + 560 + 560 * k, 600); g.stroke(); g.restore(); }
+      }
+    });
+    // the real fingerprint travels along
+    const hash = '1c2340d481f1a7f7b856964a600c4e348881e7ed5827e39ef7f317bf04d81934';
+    const a = appear(lt, 1.0, 0.5);
+    withAlpha(a, () => {
+      box(120, 640, 1680, 230, { fill: C.termBg, stroke: C.hatch });
+      text('manifest sha256', 152, 700, { size: 22, family: MONO, color: C.muted });
+      const n = Math.floor(hash.length * clamp((lt - 1.0) / 1.0));
+      text(hash.slice(0, n), 152, 742, { size: 26, family: MONO, color: C.ink, maxW: 1600 });
+      const b = appear(lt, 2.3, 0.4);
+      withAlpha(b, () => { text('ENS record', 152, 796, { size: 22, family: MONO, color: C.muted }); text('webseal = v1:sha256:' + hash.slice(0, 16) + '\u2026', 152, 836, { size: 26, family: MONO, color: C.accent }); });
+      const c = appear(lt, 3.6, 0.4);
+      withAlpha(c, () => text('\u2713 matches what the page loaded', 1120, 836, { size: 26, family: MONO, color: C.okText, weight: 600 }));
+    });
+  }, (s) => { cue(s.start + 0.3, 'tick'); cue(s.start + 1.6, 'tick'); cue(s.start + 2.9, 'tick'); cue(s.start + 3.6, 'ok'); });
+
+  /* DEMO (no music: interface sounds only) */
+  const demoStart = t;
+  // 1 release
+  const s1a = session([{ cmd: T.build.cmd, out: T.build.out }]);
+  const s1b = session([{ cmd: T.record.cmd, out: T.record.out }]);
+  add('ch1', 11, (lt, d) => {
+    chapterHeader(0, lt, d);
+    const B = 3.6;
+    terminal(120, 130, 1680, 300, s1a, lt - 0.4, { hl: [{ text: '1c2340d481f1a7f7b856964a600c4e348881e7ed5827e39ef7f317bf04d81934', at: s1a.dur - 0.1 }] });
+    withAlpha(appear(lt, B, 0.4), () => terminal(120, 470, 1680, 420, s1b, lt - B - 0.2, { hl: [{ text: '1c2340d481f1a7f7b856964a600c4e348881e7ed5827e39ef7f317bf04d81934', at: s1b.dur }] }));
+    captions(lt, 'Release', C.accent, [[0, 'CI hashes every file of the build into a manifest.'], [B, 'Its fingerprint is the webseal text record on smxreds.eth (Sepolia).']]);
+  }, (s) => { typeCues(s.start + 0.4, s1a); typeCues(s.start + 3.8, s1b); cue(s.start + 3.8 + s1b.dur, 'ok'); });
+
+  // 2 ENSv2
+  const writersTop = T.writers.out.split('\n').slice(0, 3).join('\n');
+  const s2 = session([{ cmd: T.writers.cmd, out: writersTop }]);
+  add('ch2', 9, (lt, d) => {
+    chapterHeader(1, lt, d);
+    terminal(120, 130, 1680, 250, s2, lt - 0.3, { hl: [{ text: '1 with only this record', at: s2.dur, color: C.accent }] });
+    const P = F.popupClean, sc = 2;
+    const a = appear(lt, 3.6, 0.5);
+    withAlpha(a, () => {
+      const r = shot(IMG.popupClean, 120, 450 + rise(a), 460, 440, { label: 'WebSeal popup' });
+      const z = easeOut((lt - 4.4) / 0.8);
+      const wr = P.writers, src = { x: wr.x * sc - 8, y: wr.y * sc - 8, w: wr.width * sc + 16, h: wr.height * sc + 16 };
+      withAlpha(z, () => {
+        const bx = 640, by = 470, bw = 1160, bh = bw * src.h / src.w;
+        box(bx, by, bw, bh + 4, { fill: '#151821' });
+        img(IMG.popupClean, bx + 2, by + 2, bw - 4, bh, src);
+        g.fillStyle = C.accent; g.fillRect(bx, by, 8, bh + 4);
+        g.save(); g.setLineDash([8, 8]); g.strokeStyle = C.accent; g.lineWidth = 2;
+        g.beginPath(); g.moveTo(r.x + wr.x * r.s * sc + wr.width * r.s * sc, r.y + wr.y * r.s * sc); g.lineTo(bx, by); g.stroke(); g.restore();
+      });
+    });
+    captions(lt, 'ENSv2', C.accent, [[0, 'An ENSv2 Permissioned Resolver: one key can change only the webseal record.'], [3.6, 'The extension shows every visitor who can change it.']]);
+  }, (s) => { typeCues(s.start + 0.3, s2); cue(s.start + 3.6, 'whoosh'); cue(s.start + 4.4, 'tick'); });
+
+  // 3 clean page
+  {
+    const seq = 'clean', E = (n) => ev(seq, n).t / 1000;
+    const vDone = E('verified') + 0.35;
+    const segs = [
+      { at: 0.6, dur: vDone, from: fp(seq), to: vDone },
+      { at: 0.6 + vDone + 3.4, dur: E('click-send') + 0.05 - (vDone + 0.4), from: vDone + 0.4, to: E('click-send') + 0.05 },
+    ];
+    const tSend = ltOf(segs, E('click-send'));
+    const tMM = tSend + 0.6;
+    const dur = tMM + 5.2;
+    const P = F.popupClean;
+    add('ch3', dur, (lt, d) => {
+      const ft = ftAt(segs, lt);
+      const tType = ltOf(segs, E('click-address'));
+      const sendCell = page2d(444, 560);
+      const cam = camera([[0, ...HOME], [tType - 0.2, ...HOME], [tType + 0.6, sendCell.x + 420, sendCell.y + 60, 1.55], [tSend + 0.3, sendCell.x + 420, sendCell.y + 60, 1.55], [tSend + 0.9, ...HOME]], lt);
+      withCamera(cam, () => {
+        browser(seq, ft, FRAME_IMG);
+        pointer(seq, ft);
+        // popup: verified, the files tick in
+        const pa = appear(lt, 0.6 + vDone + 0.2, 0.45), [pOut, mIn] = swap(lt, tMM, 0.6);
+        withAlpha(pa * pOut, () => {
+          const r = shot(IMG.popupClean, 1400 + rise(pa, 40), 112, 400, 632, { label: 'WebSeal' });
+          P.rows.forEach((row, i) => { const k = appear(lt, 0.6 + vDone + 0.7 + i * 0.25, 0.25); if (k < 1) { g.fillStyle = '#151821'; g.globalAlpha *= 1; g.fillRect(r.x + 2, r.y + row.y * 2 * r.s, r.w - 4, row.h * 2 * r.s * (1 - k)); } });
+        });
+        withAlpha(mIn, () => {
+          const r = shot(IMG.mmClean, 1400, 112, 400, 815, { crop: CROP.mmPanel, label: 'MetaMask \u00b7 Chrome' });
+          highlightBox(r.x + CROP.mmTo.x * r.s, r.y + CROP.mmTo.y * r.s, CROP.mmTo.w * r.s, CROP.mmTo.h * r.s, C.ok, appear(lt, tMM + 1.0, 0.4));
+        });
+      });
+      chapterHeader(2, lt, d);
+      captions(lt, 'Clean', C.ok, [[0, 'The real wagmi app, served from localhost. WebSeal checks the page as it loads.'], [0.6 + vDone, 'Every file matches the release anchored on ENS. The badge turns green.'], [tType, 'Send to your own address\u2026'], [tMM, 'Signing works: MetaMask shows the address you typed.']]);
+    }, (s) => {
+      s.footage = { seq, segs };
+      cue(s.start + ltOf(segs, E('verified')), 'ok');
+      cue(s.start + 0.6 + vDone + 0.2, 'whoosh');
+      P.rows.forEach((_, i) => cue(s.start + 0.6 + vDone + 0.7 + i * 0.25, 'tick'));
+      clickCues(s.start, seq, segs); typingCues(s.start, seq, segs);
+      cue(s.start + tMM, 'whoosh');
+    });
+  }
+
+  // 4 the attack
+  const s4 = session([{ cmd: T.tamper.cmd, out: T.tamper.out }]);
+  add('ch4', 8, (lt, d) => {
+    chapterHeader(3, lt, d);
+    terminal(120, 130, 1680, 240, s4, lt - 0.3, { hl: [{ text: '0xbad0000000000000000000000000000000000bad', at: s4.dur, color: C.bad }] });
+    const a = appear(lt, 2.6, 0.5);
+    withAlpha(a, () => {
+      box(120, 430 + rise(a), 1680, 300, { fill: C.termBg, stroke: C.hatch });
+      kicker('assets/index-Tkm4VNZY.js \u00b7 one expression changed (scripts/wagmi.mjs)', 152, 480 + rise(a));
+      const k = clamp((lt - 3.2) / 0.9);
+      g.fillStyle = 'rgba(176,0,32,.18)'; g.fillRect(140, 520 + rise(a), 1640, 64);
+      text('\u2212  ...get("address")...', 160, 564 + rise(a), { size: 32, family: MONO, color: C.badText });
+      withAlpha(k, () => { g.fillStyle = 'rgba(26,143,60,.16)'; g.fillRect(140, 600 + rise(a), 1640, 64); text('+  ...get("address")&&"0xbad0000000000000000000000000000000000bad"...', 160, 644 + rise(a), { size: 32, family: MONO, color: C.okText, maxW: 1600 }); });
+    });
+    captions(lt, 'Attack', C.bad, [[0, 'Now the attack: one served file is changed on the host.'], [2.6, 'Send now pays the attacker, whatever you type. The page looks the same.']]);
+  }, (s) => { typeCues(s.start + 0.3, s4); cue(s.start + 0.3 + s4.dur, 'alert'); cue(s.start + 3.2, 'tick'); });
+
+  // 5 blocked
+  {
+    const seq = 'tampered', E = (n) => ev(seq, n).t / 1000;
+    const tB = E('banner') + 0.15;
+    const segs = [
+      { at: 0.5, dur: tB, from: fp(seq), to: tB },
+      { at: 0.5 + tB + 6.0, dur: E('send-result') + 0.6 - (E('click-address') - 0.9), from: E('click-address') - 0.9, to: E('send-result') + 0.6 },
+    ];
+    const tBan = 0.5 + tB, tPop = tBan + 2.6, tType = ltOf(segs, E('click-address')), tRes = ltOf(segs, E('send-result'));
+    const tMM = tRes + 2.0, dur = tMM + 4.6;
+    const P = F.popupTampered, bad = P.rows.findIndex((r) => /mismatch/.test(r.text));
+    add('ch5', dur, (lt, d) => {
+      const ft = ftAt(segs, lt);
+      const ban = ev(seq, 'banner').box, b0 = page2d(ban.x, ban.y);
+      const cell = page2d(444, 651);
+      const cam = camera([[0, ...HOME], [tBan, ...HOME], [tBan + 0.7, b0.x + ban.width * FR.sc / 2, b0.y + 120, 1.45], [tPop - 0.2, b0.x + ban.width * FR.sc / 2, b0.y + 120, 1.45], [tPop + 0.5, ...HOME], [tType + 0.3, ...HOME], [tType + 1.0, cell.x + 420, cell.y + 40, 1.5], [tRes + 1.6, cell.x + 420, cell.y + 40, 1.5], [tMM, ...HOME]], lt);
+      const [bOut, mIn] = swap(lt, tMM, 0.7);
+      withAlpha(bOut, () => withCamera(cam, () => {
+        browser(seq, ft, FRAME_IMG);
+        pointer(seq, ft);
+        const pa = appear(lt, tPop, 0.45);
+        withAlpha(pa, () => {
+          const r = shot(IMG.popupBad, 1400 + rise(pa, 40), 112, 400, 632, { label: 'WebSeal' });
+          const row = P.rows[bad];
+          if (row) highlightBox(r.x + 4, r.y + row.y * 2 * r.s, r.w - 8, row.h * 2 * r.s, C.badText, appear(lt, tPop + 0.8, 0.3), 0.5 + 0.5 * Math.sin(lt * 7));
+        });
+      }));
+      withAlpha(mIn, () => {
+        const r1 = shot(IMG.mmBlocked, 120, 150, 1680, 200, { crop: CROP.mmBanner, label: 'Google Chrome + real MetaMask' });
+        shot(IMG.mmBlocked, 120, r1.y + r1.h + 40, 1200, 200, { crop: CROP.mmBlockedSend });
+        const a = appear(lt, tMM + 0.8, 0.5);
+        withAlpha(a, () => { text('MetaMask never opened.', 120, 690 + rise(a), { size: 64, weight: 700 }); text('The request was refused before it reached the wallet.', 120, 760 + rise(a), { size: 34, color: C.muted }); });
+      });
+      chapterHeader(4, lt, d);
+      captions(lt, 'Blocked', C.bad, [[0, 'Same URL, reloaded.'], [tBan, 'WebSeal: this page\u2019s code does not match the release. Signing is blocked.'], [tPop, 'The popup names the changed file: /assets/index-Tkm4VNZY.js.'], [tType, 'Try to send anyway\u2026'], [tRes, 'Refused: the wallet never receives the request.'], [tMM, 'The same in Google Chrome with real MetaMask.']]);
+    }, (s) => {
+      s.footage = { seq, segs };
+      cue(s.start + tBan, 'error'); cue(s.start + tPop, 'whoosh'); cue(s.start + tPop + 0.8, 'pulse');
+      clickCues(s.start, seq, segs); typingCues(s.start, seq, segs);
+      cue(s.start + tRes, 'error'); cue(s.start + tMM, 'whoosh');
+    });
+  }
+
+  // 6 without WebSeal
+  {
+    const seq = 'nowebseal', E = (n) => ev(seq, n).t / 1000;
+    const segs = [
+      { at: 2.6, dur: 0.6, from: fp(seq), to: fp(seq) + 0.6 },
+      { at: 3.2, dur: E('click-send') + 0.05 - (E('click-address') - 0.9), from: E('click-address') - 0.9, to: E('click-send') + 0.05 },
+    ];
+    const tSend = ltOf(segs, E('click-send')), tMM = tSend + 0.5, dur = tMM + 4.8;
+    add('ch6', dur, (lt, d) => {
+      const [eOut, bIn] = swap(lt, 2.2, 0.6);
+      withAlpha(eOut, () => {
+        const r = shot(IMG.ext, 120, 130, 1680, 780, { label: 'chrome://extensions' });
+        const c = CROP.extCard;
+        highlightBox(r.x + c.x * r.s, r.y + c.y * r.s, c.w * r.s, c.h * r.s, C.bad, appear(lt, 0.6, 0.3));
+        const k = appear(lt, 1.1, 0.3);
+        withAlpha(k, () => { g.strokeStyle = C.badText; g.lineWidth = 5; g.beginPath(); g.arc(r.x + CROP.extToggle.x * r.s, r.y + CROP.extToggle.y * r.s, 34 + 6 * Math.sin(lt * 7), 0, Math.PI * 2); g.stroke(); });
+      });
+      withAlpha(bIn, () => {
+        const ft = ftAt(segs, lt);
+        browser(seq, ft, FRAME_IMG, { badge: false });
+        pointer(seq, ft);
+        const m = appear(lt, tMM, 0.5);
+        withAlpha(m, () => {
+          const r = shot(IMG.mmAttacker, 1400 + rise(m, 40), 112, 400, 815, { crop: CROP.mmPanel, label: 'MetaMask \u00b7 Chrome' });
+          highlightBox(r.x + CROP.mmTo.x * r.s, r.y + CROP.mmTo.y * r.s, CROP.mmTo.w * r.s, CROP.mmTo.h * r.s, C.badText, appear(lt, tMM + 0.9, 0.3), 0.5 + 0.5 * Math.sin(lt * 7));
+        });
+        const z = appear(lt, tMM + 1.6, 0.5);
+        withAlpha(z, () => {
+          box(120, 560, 1240, 330, { fill: 'rgba(11,12,14,.94)', stroke: C.bad });
+          text('You typed', 160, 630, { size: 30, color: C.muted }); text('0x7e5f\u2026395bdf', 400, 630, { size: 34, family: MONO, color: C.ink });
+          text('MetaMask is asked to pay', 160, 720, { size: 30, color: C.muted });
+          text('0xBAd0\u20260Bad', 156, 830, { size: 96, weight: 700, family: MONO, color: C.badText, spacing: -2 });
+        });
+      });
+      chapterHeader(5, lt, d);
+      captions(lt, 'Without WebSeal', C.bad, [[0, 'Now turn WebSeal off and try the same tampered page.'], [2.6, 'No badge, no banner: the page looks normal.'], [tMM, 'MetaMask opens, and the transaction pays the attacker.']]);
+    }, (s) => {
+      s.footage = { seq, segs };
+      cue(s.start + 0.6, 'tick'); cue(s.start + 1.1, 'click');
+      clickCues(s.start, seq, segs); typingCues(s.start, seq, segs);
+      cue(s.start + tMM, 'whoosh'); cue(s.start + tMM + 0.9, 'pulse'); cue(s.start + tMM + 1.6, 'alert');
+    });
+  }
+
+  // 7 anyone can check
+  const s7a = session([{ cmd: T.verifyBad.cmd, out: T.verifyBad.out, lineDelay: 0.05 }]);
+  const s7b = session([{ cmd: T.restore.cmd, out: T.restore.out }, { cmd: T.reproduce.cmd, note: 'fresh clone of github.com/sm-xd/webseal at the release commit, then pnpm install and build', spin: 1.4, out: T.reproduce.out, lineDelay: 0.07 }]);
+  add('ch7', 12, (lt, d) => {
+    chapterHeader(6, lt, d);
+    const B = 0.3 + s7a.dur + 1.6;
+    const [aOut, bIn] = swap(lt, B, 0.6);
+    withAlpha(aOut, () => terminal(120, 130, 1680, 780, s7a, lt - 0.3, { hl: [{ text: 'MISMATCH', at: s7a.dur - 0.6, color: C.bad }, { text: 'FAILED', at: s7a.dur, color: C.bad }] }));
+    withAlpha(bIn, () => terminal(120, 130, 1680, 780, s7b, lt - B - 0.3, { hl: [{ text: 'REPRODUCED', at: s7b.dur, color: C.ok }] }));
+    captions(lt, 'Anyone can check', C.accent, [[0, 'Anyone can verify a site from the command line: the changed file is named.'], [B, 'And rebuild the release from the public repo: the same bytes, file for file.']]);
+  }, (s) => {
+    typeCues(s.start + 0.3, s7a); cue(s.start + 0.3 + s7a.dur, 'error');
+    const B = 0.3 + s7a.dur + 1.6;
+    typeCues(s.start + B + 0.3, s7b); cue(s.start + B + 0.3 + s7b.dur, 'reproduced');
+  });
+  const demoEnd = t;
+
+  /* OUTRO (music) */
+  add('crops', 6.5, (lt) => {
+    kicker('CROPS \u00b7 what holds without us', 120, 250);
+    const items = [['No WebSeal server', 'The browser checks ENS directly.'], ['No trackers', 'Nothing leaves the device but ENS reads.'], ['Open source \u00b7 MIT', 'Builds and reproduces from the repo.'], ['Fails closed', 'If ENS can\u2019t be read, signing stays blocked.']];
+    items.forEach(([h, sub], i) => {
+      const a = backOut((lt - 0.3 - i * 0.35) / 0.55);
+      withAlpha(clamp((lt - 0.3 - i * 0.35) / 0.25), () => {
+        const x = 120 + i * 420, y = 300;
+        g.save(); g.translate(x + 210, y + 160); g.scale(0.85 + 0.15 * a, 0.85 + 0.15 * a); g.translate(-(x + 210), -(y + 160));
+        box(x, y, i < 3 ? 422 : 420, 330);
+        g.fillStyle = C.ok; g.fillRect(x, y, 420, 6);
+        text('\u2713', x + 32, y + 96, { size: 52, weight: 700, color: C.okText });
+        wrap(h, x + 32, y + 172, 360, 48, { size: 40, weight: 700 });
+        wrap(sub, x + 32, y + 268, 360, 34, { size: 26, color: C.muted });
+        g.restore();
+      });
+    });
+    const b = appear(lt, 2.4, 0.6);
+    withAlpha(b, () => text('The code you sign with is the code that was released, and the release is the public source.', 120, 760 + rise(b), { size: 34, maxW: 1680 }));
+  }, (s) => { [0, 1, 2, 3].forEach((i) => cue(s.start + 0.3 + i * 0.35, 'tick')); });
+
+  add('close', DURATION - t, (lt, d) => {
+    const ai = backOut(lt / 0.7);
+    withAlpha(clamp(lt / 0.3), () => { const s = 130 * ai; g.drawImage(IMG.icon, 185 - s / 2, 300 - s / 2, s, s); });
+    const w = easeOut((lt - 0.25) / 0.8);
+    g.save(); g.beginPath(); g.rect(100, 360, 1400 * w + 1, 240); g.clip(); text('WebSeal', 110, 560, { size: 190, weight: 800, spacing: -6 }); g.restore();
+    rule(120, 610, 980 * easeOut((lt - 0.8) / 0.8));
+    const a = appear(lt, 1.1, 0.6);
+    withAlpha(a, () => text('Check the frontend before you sign.', 120, 700 + rise(a), { size: 54 }));
+    const b = appear(lt, 1.8, 0.6);
+    withAlpha(b, () => {
+      text('github.com/sm-xd/webseal', 120, 800, { size: 32, family: MONO, color: C.ink });
+      text('smxreds.eth (Sepolia)  \u00b7  ENSv2  \u00b7  MIT', 120, 850, { size: 26, family: MONO, color: C.muted });
+    });
+  }, (s) => { cue(s.start, 'chime'); });
+
+  window.SCENES = SCENES.map(({ id, start, end }) => ({ id, start, end }));
+  window.MUSIC = { introEnd: SCENES.find((s) => s.id === 'how').end, outroStart: demoEnd };
+  window.CUES = CUES;
+
+  function typeCues(at, sess) { for (const l of sess.lines) { if (l.cmd) { const n = l.text.length - l.typeFrom; for (let i = 0; i < n; i += 2) cue(at + l.start + (i / n) * l.typeDur, 'key'); cue(at + l.start + l.typeDur + 0.1, 'enter'); } } }
+  function clickCues(start, seq, segs) { for (const n of ['click-address', 'click-value', 'click-send']) { const tt = ltOf(segs, ev(seq, n).t / 1000); if (tt !== null) cue(start + tt, 'click'); } }
+  function typingCues(start, seq, segs) {
+    const a = ltOf(segs, ev(seq, 'type-address-start').t / 1000), b = ltOf(segs, ev(seq, 'type-address-end').t / 1000);
+    if (a !== null && b !== null) for (let tt = a; tt < b; tt += 0.09) cue(start + tt, 'key');
+  }
+}
+
+/* ---------- frame ---------- */
+const FADE_IN = 0.3, FADE_OUT = 0.25;
+let FRAME_IMG = null; // the footage frame for the current moment, loaded before drawing
+function active(t) {
+  const out = [];
+  SCENES.forEach((s, i) => {
+    const last = i === SCENES.length - 1;
+    if (t < s.start || t >= (last ? s.end + 1 : s.end)) return;
+    const fin = i === 0 ? 1 : clamp((t - s.start) / FADE_IN), fout = last ? 1 : clamp((s.end - t) / FADE_OUT);
+    out.push({ s, a: Math.min(fin, fout) });
+  });
+  return out;
+}
+window.drawFrame = async (t) => {
+  // load the footage frame this moment needs, before drawing anything
+  const cur = active(t).find(({ s }) => s.footage);
+  if (cur) {
+    const { seq, segs } = cur.s.footage;
+    const fr = footageFrame(seq, ftAt(segs, t - cur.s.start));
+    const im = await load('/video-assets/footage/' + fr.file);
+    FRAME_IMG = im;
+  }
+  g.setTransform(S, 0, 0, S, 0, 0);
+  g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high';
+  g.globalAlpha = 1; g.fillStyle = C.paper; g.fillRect(0, 0, DW, DH);
+  for (const { s, a } of active(t)) withAlpha(a, () => s.draw(t - s.start, s.end - s.start));
+};
+
+/* ---------- soundtrack ---------- */
+const midi = (n) => 440 * Math.pow(2, (n - 69) / 12);
+function rng(seed) { let s = seed >>> 0; return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296); }
+window.renderAudio = async () => {
+  const SR = 48000, ctx = new OfflineAudioContext(2, SR * DURATION, SR);
+  const comp = ctx.createDynamicsCompressor(); comp.threshold.value = -16; comp.ratio.value = 3; comp.connect(ctx.destination);
+  // music bus: only in the intro and the outro
+  const music = ctx.createGain(); music.connect(comp);
+  const { introEnd, outroStart } = window.MUSIC;
+  music.gain.setValueAtTime(0, 0); music.gain.linearRampToValueAtTime(1, 1.0);
+  music.gain.setValueAtTime(1, introEnd - 2.2); music.gain.linearRampToValueAtTime(0, introEnd + 0.4);
+  music.gain.setValueAtTime(0, outroStart - 0.2); music.gain.linearRampToValueAtTime(1, outroStart + 1.6);
+  music.gain.setValueAtTime(1, DURATION - 2.4); music.gain.linearRampToValueAtTime(0, DURATION - 0.05);
+  const verb = ctx.createConvolver();
+  { const len = SR * 3, ir = ctx.createBuffer(2, len, SR), r = rng(7); for (let ch = 0; ch < 2; ch++) { const d = ir.getChannelData(ch); for (let i = 0; i < len; i++) d[i] = (r() * 2 - 1) * Math.pow(1 - i / len, 2.6); } verb.buffer = ir; }
+  const wet = ctx.createGain(); wet.gain.value = 0.3; verb.connect(wet); wet.connect(music);
+  const mbus = ctx.createGain(); mbus.connect(music); mbus.connect(verb);
+  // interface sounds: always on
+  const fx = ctx.createGain(); fx.gain.value = 1; fx.connect(comp);
+  const fxVerb = ctx.createGain(); fxVerb.gain.value = 0.25; fx.connect(fxVerb); fxVerb.connect(verb);
+  const noise = ctx.createBuffer(1, SR, SR); { const d = noise.getChannelData(0), r = rng(11); for (let i = 0; i < d.length; i++) d[i] = r() * 2 - 1; }
+
+  function voice(dest, freq, t0, t1, { type = 'triangle', level = 0.04, attack = 0.6, release = 1.0, detune = 0, pan = 0, cutoff = 1500 } = {}) {
+    const o = ctx.createOscillator(); o.type = type; o.frequency.value = freq; o.detune.value = detune;
+    const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = cutoff;
+    const gn = ctx.createGain(); gn.gain.setValueAtTime(0, t0); gn.gain.linearRampToValueAtTime(level, t0 + attack); gn.gain.setValueAtTime(level, Math.max(t0 + attack, t1)); gn.gain.linearRampToValueAtTime(0, t1 + release);
+    const p = ctx.createStereoPanner(); p.pan.value = pan;
+    o.connect(f); f.connect(gn); gn.connect(p); p.connect(dest); o.start(t0); o.stop(t1 + release + 0.05);
+  }
+  function pluck(dest, n, t, level = 0.05, dur = 0.9, pan = 0) {
+    const o = ctx.createOscillator(); o.type = 'triangle'; o.frequency.value = midi(n);
+    const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.setValueAtTime(3200, t); f.frequency.exponentialRampToValueAtTime(700, t + dur);
+    const gn = ctx.createGain(); gn.gain.setValueAtTime(0, t); gn.gain.linearRampToValueAtTime(level, t + 0.006); gn.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    const p = ctx.createStereoPanner(); p.pan.value = pan;
+    o.connect(f); f.connect(gn); gn.connect(p); p.connect(dest); o.start(t); o.stop(t + dur + 0.05);
+  }
+  function kick(t, level = 0.16) { const o = ctx.createOscillator(); o.frequency.setValueAtTime(110, t); o.frequency.exponentialRampToValueAtTime(45, t + 0.18); const gn = ctx.createGain(); gn.gain.setValueAtTime(level, t); gn.gain.exponentialRampToValueAtTime(0.0001, t + 0.32); o.connect(gn); gn.connect(music); o.start(t); o.stop(t + 0.35); }
+  function section(chords, t0, beat) { // chords: [[notes], bass, beats]
+    let t = t0;
+    for (const [notes, bass, beats] of chords) {
+      const t1 = t + beats * beat;
+      notes.forEach((n, i) => { const pan = (i / (notes.length - 1) - 0.5) * 0.6; voice(mbus, midi(n), t, t1, { level: 0.026, detune: -5, pan }); voice(mbus, midi(n), t, t1, { level: 0.018, detune: 6, type: 'sine', pan: -pan }); });
+      voice(mbus, midi(bass), t, t1, { type: 'sine', level: 0.06, attack: 0.3, cutoff: 400 });
+      const arp = [notes[0] + 12, notes[1] + 12, notes[2] + 12, notes[3] + 12, notes[2] + 12, notes[1] + 12];
+      for (let b = 0; b < beats * 2; b++) pluck(mbus, arp[b % arp.length], t + b * beat / 2, 0.028, 0.7, ((b % 3) - 1) * 0.35);
+      for (let b = 0; b < beats; b++) kick(t + b * beat, b % 2 ? 0.07 : 0.12);
+      t = t1;
+    }
+  }
+  const beat = 60 / 92;
+  // intro: Am9 Fmaj7 C G6 (x2), then fades out
+  section([[[57, 60, 64, 71], 45, 4], [[53, 57, 60, 64], 41, 4], [[55, 60, 64, 67], 48, 4], [[55, 59, 62, 64], 43, 4], [[57, 60, 64, 71], 45, 4], [[53, 57, 60, 64], 41, 4], [[55, 60, 64, 67], 48, 4], [[55, 59, 62, 64], 43, 4]], 0, beat);
+  // outro: Fadd9 C Fmaj7 Cadd9, resolving
+  section([[[53, 57, 60, 67], 41, 4], [[55, 60, 64, 67], 48, 4], [[53, 57, 60, 64], 41, 4], [[55, 60, 62, 64], 48, 8]], outroStart, beat);
+
+  // interface sounds, on the cues the picture uses
+  const R = rng(3);
+  function tone(n, t, { type = 'sine', level = 0.05, dur = 0.6, dest = fx } = {}) { const o = ctx.createOscillator(); o.type = type; o.frequency.value = midi(n); const gn = ctx.createGain(); gn.gain.setValueAtTime(0, t); gn.gain.linearRampToValueAtTime(level, t + 0.006); gn.gain.exponentialRampToValueAtTime(0.0001, t + dur); o.connect(gn); gn.connect(dest); o.start(t); o.stop(t + dur + 0.05); }
+  function burst(t, { level = 0.04, dur = 0.03, freq = 3000, q = 1.2, type = 'bandpass' } = {}) { const s = ctx.createBufferSource(); s.buffer = noise; const f = ctx.createBiquadFilter(); f.type = type; f.frequency.value = freq; f.Q.value = q; const gn = ctx.createGain(); gn.gain.setValueAtTime(level, t); gn.gain.exponentialRampToValueAtTime(0.0001, t + dur); s.connect(f); f.connect(gn); gn.connect(fx); s.start(t, R() * 0.5); s.stop(t + dur + 0.02); }
+  function whoosh(t) { const s = ctx.createBufferSource(); s.buffer = noise; const f = ctx.createBiquadFilter(); f.type = 'bandpass'; f.Q.value = 0.8; f.frequency.setValueAtTime(400, t); f.frequency.exponentialRampToValueAtTime(2600, t + 0.3); const gn = ctx.createGain(); gn.gain.setValueAtTime(0, t); gn.gain.linearRampToValueAtTime(0.05, t + 0.12); gn.gain.exponentialRampToValueAtTime(0.0001, t + 0.42); s.connect(f); f.connect(gn); gn.connect(fx); s.start(t); s.stop(t + 0.45); }
+  for (const c of window.CUES) {
+    const t = c.t;
+    if (t < 0 || t > DURATION - 0.1) continue;
+    switch (c.type) {
+      case 'key': burst(t, { level: 0.018 + R() * 0.01, dur: 0.022, freq: 2400 + R() * 1800 }); break;
+      case 'enter': burst(t, { level: 0.03, dur: 0.05, freq: 1500 }); break;
+      case 'click': burst(t, { level: 0.05, dur: 0.025, freq: 4200, q: 2 }); tone(86, t, { level: 0.012, dur: 0.05 }); break;
+      case 'tick': tone(88, t, { level: 0.022, dur: 0.18 }); break;
+      case 'whoosh': whoosh(t); break;
+      case 'ok': tone(88, t, { level: 0.04, dur: 0.7 }); tone(95, t + 0.1, { level: 0.03, dur: 0.9 }); break;
+      case 'reproduced': tone(84, t, { level: 0.04, dur: 0.6 }); tone(88, t + 0.1, { level: 0.035, dur: 0.6 }); tone(91, t + 0.2, { level: 0.035, dur: 1.2 }); break;
+      case 'error': tone(64, t, { type: 'triangle', level: 0.05, dur: 0.35 }); tone(60, t + 0.16, { type: 'triangle', level: 0.05, dur: 0.6 }); break;
+      case 'alert': { const o = ctx.createOscillator(); o.type = 'triangle'; o.frequency.setValueAtTime(midi(69), t); o.frequency.exponentialRampToValueAtTime(midi(57), t + 0.5); const gn = ctx.createGain(); gn.gain.setValueAtTime(0, t); gn.gain.linearRampToValueAtTime(0.06, t + 0.02); gn.gain.exponentialRampToValueAtTime(0.0001, t + 0.9); o.connect(gn); gn.connect(fx); o.start(t); o.stop(t + 1); break; }
+      case 'alertSoft': tone(57, t, { type: 'triangle', level: 0.04, dur: 0.8 }); break;
+      case 'pulse': { const o = ctx.createOscillator(); o.frequency.setValueAtTime(90, t); o.frequency.exponentialRampToValueAtTime(45, t + 0.2); const gn = ctx.createGain(); gn.gain.setValueAtTime(0.14, t); gn.gain.exponentialRampToValueAtTime(0.0001, t + 0.35); o.connect(gn); gn.connect(fx); o.start(t); o.stop(t + 0.4); break; }
+      case 'chime': tone(76, t, { level: 0.04, dur: 2.0, dest: mbus }); tone(83, t + 0.08, { level: 0.03, dur: 2.0, dest: mbus }); break;
+      case 'soft': tone(79, t, { level: 0.025, dur: 1.2, dest: mbus }); break;
+    }
+  }
+  const buf = await ctx.startRendering();
+  const n = buf.length, ch = 2, bytes = 44 + n * ch * 2, out = new DataView(new ArrayBuffer(bytes));
+  const str = (o, s) => [...s].forEach((c, i) => out.setUint8(o + i, c.charCodeAt(0)));
+  str(0, 'RIFF'); out.setUint32(4, bytes - 8, true); str(8, 'WAVE'); str(12, 'fmt '); out.setUint32(16, 16, true); out.setUint16(20, 1, true); out.setUint16(22, ch, true); out.setUint32(24, SR, true); out.setUint32(28, SR * ch * 2, true); out.setUint16(32, ch * 2, true); out.setUint16(34, 16, true); str(36, 'data'); out.setUint32(40, n * ch * 2, true);
+  const L = buf.getChannelData(0), Rr = buf.getChannelData(1);
+  let peak = 0; for (let i = 0; i < n; i++) peak = Math.max(peak, Math.abs(L[i]), Math.abs(Rr[i]));
+  const norm = peak > 0 ? 0.89 / peak : 1;
+  for (let i = 0, o = 44; i < n; i++, o += 4) { out.setInt16(o, clamp(L[i] * norm, -1, 1) * 32767, true); out.setInt16(o + 2, clamp(Rr[i] * norm, -1, 1) * 32767, true); }
+  const u8 = new Uint8Array(out.buffer); let bin = '';
+  for (let i = 0; i < u8.length; i += 0x8000) bin += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+  return { wav: btoa(bin), peak };
+};
+</script>
+</body>
+</html>
