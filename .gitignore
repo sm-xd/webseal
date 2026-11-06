@@ -6,3 +6,7 @@ dist-clean
 .DS_Store
 out/
 .chrome-profile/
+# demo recorder scratch (scripts/record-demo.mjs) and its MetaMask profile
+docs/demo/.frames/
+docs/demo/.cut/
+.demo-profile/

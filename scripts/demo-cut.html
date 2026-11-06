@@ -1,0 +1,195 @@
+<!doctype html>
+<!--
+  Assembles the WebSeal demo video. scripts/record-demo.mjs records each browser
+  page as its own clip, writes timeline.json next to this file, opens this page
+  in a 1280x720 window and records it: the result is the finished video.
+  Every clip is a real recording; captions only describe what is on screen.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>WebSeal demo cut</title>
+<style>
+  :root {
+    --stage: #0e1218; --panel: #161c25; --ink: #eef1f5; --muted: #9aa5b4;
+    --ok: #2fbf68; --fail: #ff4d61; --accent: #e0606f; --term: #0a0d12; --term-ink: #cfe3d3;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; width: 1280px; height: 720px; overflow: hidden; background: var(--stage); color: var(--ink); font-family: "Segoe UI", system-ui, sans-serif; }
+  .scene { position: absolute; inset: 0; display: none; }
+  .scene.on { display: block; }
+
+  /* clip scenes: header, main clip with optional inset, caption bar */
+  .head { position: absolute; left: 32px; right: 32px; top: 14px; height: 28px; display: flex; align-items: center; gap: 12px; }
+  .head .brand { font-weight: 700; letter-spacing: .02em; }
+  .head .title { color: var(--muted); }
+  .main { position: absolute; left: 32px; top: 52px; width: 960px; height: 540px; border-radius: 10px; overflow: hidden; background: #fff; box-shadow: 0 8px 30px rgba(0,0,0,.45); }
+  .inset { position: absolute; left: 1012px; top: 52px; width: 236px; height: 447px; border-radius: 10px; overflow: hidden; background: #fff; box-shadow: 0 8px 30px rgba(0,0,0,.45); opacity: 0; transition: opacity .25s; }
+  .inset.on { opacity: 1; }
+  .inset.window { left: 600px; top: 120px; width: 560px; height: 315px; }
+  .inset .label { position: absolute; left: 0; right: 0; bottom: 0; padding: 4px 8px; font-size: 12px; background: rgba(0,0,0,.65); color: #fff; }
+  .caption { position: absolute; left: 32px; right: 32px; bottom: 22px; height: 96px; display: flex; align-items: center; gap: 18px; }
+  .caption .text { font-size: 24px; line-height: 1.3; text-wrap: balance; }
+  .chip { flex: none; font: 700 15px/1 ui-monospace, Consolas, monospace; padding: 8px 12px; border-radius: 999px; border: 2px solid currentColor; display: none; }
+  .chip.ok { color: var(--ok); display: inline-block; }
+  .chip.fail { color: var(--fail); display: inline-block; }
+
+  /* cards */
+  .card { position: absolute; inset: 0; display: grid; place-content: center; gap: 22px; padding: 0 120px; text-align: center; }
+  .card h1 { margin: 0; font-size: 64px; letter-spacing: -.01em; }
+  .card p { margin: 0 auto; font-size: 26px; line-height: 1.4; color: var(--muted); max-width: 900px; text-wrap: balance; }
+  .card .big { color: var(--ink); }
+  .card .seal { font-size: 15px; letter-spacing: .14em; text-transform: uppercase; color: var(--accent); font-weight: 700; }
+  .term { text-align: left; margin: 0 auto; width: 980px; background: var(--term); border-radius: 10px; box-shadow: 0 8px 30px rgba(0,0,0,.5); overflow: hidden; }
+  .term .bar { height: 30px; background: #1d232d; display: flex; align-items: center; gap: 7px; padding: 0 12px; }
+  .term .bar i { width: 11px; height: 11px; border-radius: 50%; background: #3a4352; display: block; }
+  .term pre { margin: 0; padding: 18px 22px; font: 19px/1.55 ui-monospace, Consolas, monospace; color: var(--term-ink); white-space: pre-wrap; word-break: break-all; min-height: 120px; }
+  .term .cmd { color: #fff; }
+  .term .cmd::before { content: "$ "; color: var(--ok); }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<script>
+const stage = document.getElementById('stage');
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const el = (tag, cls, html) => { const e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; };
+const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c]);
+
+function show(node) {
+  stage.replaceChildren(node);
+  node.classList.add('on');
+}
+
+async function card(s) {
+  const root = el('div', 'scene');
+  const c = el('div', 'card');
+  if (s.kicker) c.append(el('div', 'seal', esc(s.kicker)));
+  if (s.title) c.append(el('h1', '', esc(s.title)));
+  for (const line of s.lines ?? []) c.append(el('p', line.big ? 'big' : '', esc(line.text ?? line)));
+  if (s.terminal) {
+    const t = el('div', 'term');
+    t.append(el('div', 'bar', '<i></i><i></i><i></i>'));
+    const pre = el('pre');
+    t.append(pre);
+    c.append(t);
+    root.append(c);
+    show(root);
+    // type the command, then print its real output
+    const cmd = el('span', 'cmd');
+    pre.append(cmd);
+    for (const ch of s.terminal.cmd) { cmd.textContent += ch; await sleep(35); }
+    await sleep(400);
+    pre.append('\n' + s.terminal.output.trim());
+    await sleep(s.durationMs);
+    return;
+  }
+  root.append(c);
+  show(root);
+  await sleep(s.durationMs);
+}
+
+/**
+ * A captured page: timed screenshots ({ at: ms, file }) shown at their real pace.
+ * play() starts the clock; frames are preloaded a second ahead.
+ */
+function sequence(frames) {
+  const img = document.createElement('img');
+  img.style.cssText = 'width:100%;height:100%;display:block;object-fit:contain;object-position:left top;background:#fff';
+  const cache = new Map();
+  const preload = (i) => {
+    for (let j = i; j < frames.length && frames[j].at <= (frames[i]?.at ?? 0) + 1000; j++) {
+      if (!cache.has(j)) {
+        const im = new Image();
+        im.src = frames[j].file;
+        cache.set(j, im.decode().catch(() => {}));
+      }
+    }
+  };
+  let shown = -1;
+  let raf;
+  return {
+    el: img,
+    ready: async () => {
+      if (!frames.length) return;
+      preload(0);
+      await cache.get(0);
+      img.src = frames[0].file;
+      shown = 0;
+    },
+    play() {
+      const start = performance.now();
+      let i = 0;
+      const tick = () => {
+        const now = performance.now() - start;
+        while (i + 1 < frames.length && frames[i + 1].at <= now) i++;
+        if (i !== shown) {
+          img.src = frames[i].file;
+          shown = i;
+          preload(i);
+        }
+        raf = requestAnimationFrame(tick);
+      };
+      tick();
+    },
+    stop: () => cancelAnimationFrame(raf),
+  };
+}
+
+async function clip(s) {
+  const root = el('div', 'scene');
+  const head = el('div', 'head', `<span class="brand">WebSeal</span><span class="title">${esc(s.title)}</span>`);
+  const main = el('div', 'main');
+  const caption = el('div', 'caption');
+  const chip = el('span', 'chip');
+  const text = el('div', 'text');
+  caption.append(chip, text);
+  root.append(head, main, caption);
+
+  const mainSeq = sequence(s.main.frames);
+  await mainSeq.ready();
+  main.append(mainSeq.el);
+  const insets = [];
+  for (const ins of s.inserts ?? []) {
+    const box = el('div', `inset ${ins.kind}`);
+    const seq = sequence(ins.frames);
+    await seq.ready();
+    box.append(seq.el);
+    if (ins.label) box.append(el('div', 'label', esc(ins.label)));
+    root.append(box);
+    insets.push({ ...ins, box, seq });
+  }
+  show(root);
+
+  const timers = [];
+  const at = (ms, fn) => timers.push(setTimeout(fn, Math.max(0, ms)));
+  for (const c of s.cues) {
+    at(c.at, () => {
+      text.textContent = c.text;
+      chip.className = 'chip' + (c.chip ? ' ' + c.chip : '');
+      chip.textContent = c.chip === 'ok' ? 'WebSeal ✓ verified' : c.chip === 'fail' ? 'WebSeal ✗ blocked' : '';
+    });
+  }
+  for (const ins of insets) {
+    at(ins.start, () => { ins.box.classList.add('on'); ins.seq.play(); });
+    at(ins.end, () => { ins.box.classList.remove('on'); ins.seq.stop(); });
+  }
+  mainSeq.play();
+  await sleep(s.durationMs);
+  mainSeq.stop();
+  timers.forEach(clearTimeout);
+}
+
+(async () => {
+  const timeline = await (await fetch('timeline.json')).json();
+  await sleep(300);
+  for (const s of timeline.scenes) {
+    if (s.kind === 'card') await card(s);
+    else await clip(s);
+  }
+  await sleep(600);
+  window.__done = true;
+})();
+</script>
+</body>
+</html>

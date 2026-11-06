@@ -14,12 +14,15 @@
     "demo:serve": "node apps/demo/server.mjs",
     "demo:tamper": "node apps/demo/tamper.mjs",
     "demo:restore": "node apps/demo/restore.mjs",
-    "demo": "node scripts/demo.mjs"
+    "demo": "node scripts/demo.mjs",
+    "e2e:browser": "node scripts/e2e-browser.mjs",
+    "demo:record": "node scripts/record-demo.mjs"
   },
   "devDependencies": {
     "@types/chrome": "^0.1.43",
     "@types/node": "^26.6.6",
     "esbuild": "^0.25.10",
+    "playwright": "1.49.1",
     "typescript": "^5.9.3"
   },
   "pnpm": {
