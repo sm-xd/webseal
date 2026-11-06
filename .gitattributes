@@ -1,0 +1,8 @@
+# Same bytes on every OS: a checkout on Windows must build the same fingerprint
+# as one on Linux CI (webseal reproduce depends on it).
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.mp4 binary
+*.webm binary
+*.ico binary
