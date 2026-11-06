@@ -1,0 +1,9 @@
+{
+  "manifest_version": 3,
+  "name": "Fake Wallet (test)",
+  "version": "0.0.1",
+  "content_scripts": [
+    { "matches": ["http://*/*", "https://*/*"], "js": ["inpage.js"], "run_at": "document_start", "world": "MAIN",
+      "all_frames": true, "match_about_blank": true, "match_origin_as_fallback": true }
+  ]
+}

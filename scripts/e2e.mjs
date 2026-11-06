@@ -9,6 +9,7 @@ const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const DEMO = join(ROOT, 'apps/demo');
 const CLI = join(ROOT, 'packages/cli/dist/webseal.js');
 const PORT = 4198;
+const ENS_PORT = 8597; // control port; the RPC listens on ENS_PORT + 1
 const run = (args, ok = true) => {
   try {
     return { code: 0, out: execFileSync('node', args, { cwd: ROOT, stdio: 'pipe' }).toString() };
@@ -36,6 +37,29 @@ try {
   run([join(DEMO, 'restore.mjs')]);
   const again = run([CLI, 'verify', `http://localhost:${PORT}`, '--expect', hash], false);
   check(again.code === 0, 'restored build verifies');
+
+  // ENS anchor through a local fake ENS RPC (scripts/fixtures/fake-ens-rpc.mjs): the real
+  // viem lookup path, without a chain or a key.
+  const other = 'b'.repeat(64);
+  const records = {
+    'webseal.acme-sub.eth': `v1:sha256:${hash}`, // only the subname has the record (limited-rights CI key)
+    'acme-roll.eth': `v1:sha256:${other},${hash}`, // rollout: new hash first, served build second
+    'acme-stale.eth': `v1:sha256:${other}`, // anchors a different build
+  };
+  const ens = spawn('node', [join(ROOT, 'scripts/fixtures/fake-ens-rpc.mjs'), String(ENS_PORT), JSON.stringify(records)], { stdio: ['ignore', 'pipe', 'inherit'] });
+  try {
+    await new Promise((r) => ens.stdout.on('data', (d) => /ready/.test(String(d)) && r()));
+    const ensVerify = (name) => run([CLI, 'verify', `http://localhost:${PORT}`, '--name', name, '--chain', 'sepolia', '--rpc', `http://localhost:${ENS_PORT + 1}`], false);
+    const sub = ensVerify('acme-sub.eth');
+    check(sub.code === 0 && /via webseal.acme-sub.eth/.test(sub.out), 'ENS: record only on webseal.<name> is found and verifies');
+    check(ensVerify('acme-roll.eth').code === 0, 'ENS: rollout record listing two hashes accepts the served build');
+    const stale = ensVerify('acme-stale.eth');
+    check(stale.code === 1 && /manifest  MISMATCH/.test(stale.out), 'ENS: record anchoring a different build fails');
+    const none = ensVerify('acme-none.eth');
+    check(none.code === 1, 'ENS: name without a record fails');
+  } finally {
+    ens.kill();
+  }
 } finally {
   server.kill();
 }
