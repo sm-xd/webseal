@@ -40,8 +40,24 @@ function tellPage(status: PageStatus, reason = '') {
   channel?.dispatchEvent(new CustomEvent(EV_STATUS_PREFIX + status, { detail: reason }));
 }
 
+// False once the extension is reloaded or removed: this script keeps running in
+// tabs that were open, but can no longer reach the background worker.
+function alive(): boolean {
+  try {
+    return !!chrome.runtime?.id;
+  } catch {
+    return false;
+  }
+}
+
 function send(msg: Msg): Promise<unknown> {
-  return chrome.runtime.sendMessage(msg).catch(() => undefined);
+  if (!alive()) return Promise.resolve(undefined);
+  try {
+    return chrome.runtime.sendMessage(msg).catch(() => undefined);
+  } catch {
+    // "Extension context invalidated" is thrown, not rejected
+    return Promise.resolve(undefined);
+  }
 }
 
 /* ---------- where does this frame's verdict come from ---------- */
@@ -135,12 +151,21 @@ async function serviceWorkerScripts(): Promise<string[]> {
   }
 }
 
-async function fetchSameOrigin(path: string): Promise<Uint8Array | null> {
-  const res = await fetch(new URL(path, location.origin), { cache: 'force-cache', credentials: 'same-origin' });
+/**
+ * Subresources are re-read with 'force-cache', so the bytes hashed are the ones
+ * the page most likely ran (built assets have content-hashed names, so a cached
+ * copy is the right copy). The HTML document keeps its name across releases, so
+ * a cached copy can be an older release: it is revalidated with the server,
+ * like the navigation that loaded the page.
+ */
+async function fetchFrom(path: string, cache: RequestCache): Promise<Uint8Array | null> {
+  const res = await fetch(new URL(path, location.origin), { cache, credentials: 'same-origin' });
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return new Uint8Array(await res.arrayBuffer());
 }
+const fetchSameOrigin = (path: string) => fetchFrom(path, 'force-cache');
+const fetchDocument = (path: string) => fetchFrom(path, 'no-cache');
 
 /* ---------- verification (incremental) ---------- */
 let anchor: Anchor = { kind: 'none' };
@@ -163,7 +188,7 @@ function resetResults() {
 async function verify(): Promise<VerifyReport> {
   const report: VerifyReport = {
     ok: false,
-    anchor: anchor.kind === 'ens' ? { kind: 'ens', name: anchor.name, chain: anchor.chain, hash: anchor.hash, error: anchor.error } : anchor.kind === 'hash' ? { kind: 'hash', hash: anchor.hash } : { kind: 'none', error: anchor.note },
+    anchor: anchor.kind === 'ens' ? { kind: 'ens', name: anchor.name, chain: anchor.chain, hash: anchor.hash, error: anchor.error, writers: anchor.writers } : anchor.kind === 'hash' ? { kind: 'hash', hash: anchor.hash } : { kind: 'none', error: anchor.note },
     manifest: { ok: false },
     files: [],
     inline: [],
@@ -197,16 +222,25 @@ async function verify(): Promise<VerifyReport> {
   const accepted = anchor.kind === 'ens' && anchor.hashes?.length ? anchor.hashes : [expected];
   report.manifest.ok = !!manifestState.actual && accepted.includes(manifestState.actual);
 
-  docResult ??= await verifyDocument(manifest, documentPath, fetchSameOrigin);
+  docResult ??= await verifyDocument(manifest, documentPath, fetchDocument);
 
   const { paths, inline, cross } = collect();
+  const swPaths = new Set<string>();
   for (const url of await serviceWorkerScripts()) {
     const c = classify(url, 'script');
-    if (c?.path) paths.add(c.path);
+    if (c?.path) {
+      paths.add(c.path);
+      swPaths.add(c.path);
+    }
   }
   paths.delete(docResult.path);
   const fresh = Array.from(paths).filter((p) => !fileResults.has(p));
-  if (fresh.length) for (const r of await verifyFiles(manifest, fresh, fetchSameOrigin)) fileResults.set(r.path, r);
+  if (fresh.length) {
+    for (const r of await verifyFiles(manifest, fresh, fetchSameOrigin)) {
+      if (swPaths.has(r.path)) r.note = SW_NOTE;
+      fileResults.set(r.path, r);
+    }
+  }
   for (const href of cross) if (!crossResults.has(href)) crossResults.set(href, { path: href, status: 'unlisted', note: 'cross-origin script' });
   const freshInline = inline.filter((b) => !inlineResults.has(b));
   if (freshInline.length) {
@@ -221,12 +255,18 @@ async function verify(): Promise<VerifyReport> {
   return report;
 }
 
+const SW_NOTE = 'service worker';
+
 function failureReason(r: VerifyReport): string {
   if (r.manifest.error) return r.manifest.error;
   if (r.manifest.expected && !r.manifest.ok) return 'The served manifest does not match the anchored hash.';
   const bad = [...r.files, ...r.inline].filter((f) => f.status !== 'ok');
   if (!bad.length) return '';
   const first = bad[0];
+  if (first.note === SW_NOTE && first.status !== 'mismatch') {
+    // Often a leftover from another app that ran on the same address (e.g. another dev server on this port).
+    return `A service worker that is not in this release is installed for this site: ${first.path}. It can rewrite every response. If it is left over from another app on this address, unregister it (DevTools > Application > Service workers) and reload.`;
+  }
   const label = first.status === 'mismatch' ? 'changed' : first.status === 'unlisted' ? 'not in the release' : first.status;
   return `${bad.length} file(s) failed. First: ${first.path} (${label}).`;
 }
@@ -247,7 +287,7 @@ function showBanner(text: string, items: FileResult[]) {
   const root = host.attachShadow({ mode: 'closed' });
   const list = items
     .slice(0, 5)
-    .map((f) => `<li><code>${escapeHtml(f.path)}</code> ${escapeHtml(f.status)}</li>`)
+    .map((f) => `<li><code>${escapeHtml(f.path)}</code> ${escapeHtml(f.status)}${f.note === SW_NOTE ? ' (service worker)' : ''}</li>`)
     .join('');
   root.innerHTML = `
     <style>
@@ -414,7 +454,7 @@ async function relatedFailed(reason: string) {
 function watch() {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const schedule = () => {
-    if (timer || everFailed) return;
+    if (timer || everFailed || !alive()) return;
     timer = setTimeout(async () => {
       timer = undefined;
       await run();
@@ -444,6 +484,7 @@ function watch() {
     navigator.serviceWorker?.addEventListener('controllerchange', schedule);
     // A new registration does not take control right away; poll briefly after it is created.
     const swTimer = setInterval(async () => {
+      if (!alive()) return clearInterval(swTimer);
       for (const u of await serviceWorkerScripts()) if (isNew(u, 'script')) return schedule();
     }, 2000);
     window.addEventListener('pagehide', () => clearInterval(swTimer));

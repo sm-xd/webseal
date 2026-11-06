@@ -1,5 +1,6 @@
 import type { VerifyReport } from '@webseal/core';
 import type { PageStatus } from './channel.ts';
+import type { RecordWriters } from '@webseal/core';
 
 export type { PageStatus };
 
@@ -8,7 +9,7 @@ export type Pin = { kind: 'ens'; name: string } | { kind: 'hash'; hash: string }
 export type Anchor =
   | { kind: 'none'; note?: string }
   | { kind: 'hash'; hash: string }
-  | { kind: 'ens'; name: string; chain: string; hash?: string; hashes?: string[]; error?: string; derived?: boolean };
+  | { kind: 'ens'; name: string; chain: string; hash?: string; hashes?: string[]; error?: string; derived?: boolean; writers?: RecordWriters };
 
 export interface Settings {
   chain: 'mainnet' | 'sepolia';

@@ -60,6 +60,7 @@ import { CHANNEL_TAG, EV_HELLO, EV_STATUS_PREFIX, type PageStatus } from './chan
   let status: PageStatus = 'pending';
   let reason = '';
   let waiters: Array<() => void> = [];
+  let onStatusChange: () => void = () => {};
   const settle = () => {
     const ws = waiters;
     waiters = [];
@@ -91,6 +92,7 @@ import { CHANNEL_TAG, EV_HELLO, EV_STATUS_PREFIX, type PageStatus } from './chan
         const d = apply(detailGet, ev, []);
         status = s;
         reason = typeof d === 'string' ? d : '';
+        onStatusChange();
         settle();
       },
     ]);
@@ -179,6 +181,51 @@ import { CHANNEL_TAG, EV_HELLO, EV_STATUS_PREFIX, type PageStatus } from './chan
     return a0;
   };
 
+  /* ---------- in-place hardening ----------
+   * Wrapping window.ethereum is not enough: another extension may own that
+   * property (Flow Wallet installs a locked, non-configurable window.ethereum
+   * that routes to MetaMask), and routers keep their own reference to the
+   * wallet's provider. So every provider object WebSeal sees also gets its
+   * public request/send/sendAsync replaced, in place, by gated versions: any
+   * path that ends at the wallet's provider then goes through the gate.
+   */
+  const hardened = new WeakSet<object>();
+  const gatedFns = new WeakSet<Function>();
+  const gatedRequest = (original: Function, thisArg: object) =>
+    async function (args: any) {
+      const method = args === null || typeof args !== 'object' ? undefined : args.method;
+      if (typeof method !== 'string') throw rpcError('WebSeal: invalid request, method must be a string', -32600);
+      const params = args.params;
+      if (isSigning(method)) await gate();
+      return apply(original, thisArg, [{ method, params }]);
+    };
+  const gatedLegacy = (original: Function, thisArg: object) =>
+    function (...args: unknown[]) {
+      const out: unknown[] = [];
+      for (let i = 0; i < args.length; i++) out[i] = i === 0 ? checkLegacyArg(args[0]) : args[i];
+      return apply(original, thisArg, out);
+    };
+  const patchMethod = (obj: object, key: string, make: (fn: Function, self: object) => Function) => {
+    const fn = reflectGet(obj, key, obj);
+    if (typeof fn !== 'function' || apply(wsHas, gatedFns, [fn])) return;
+    const g = make(fn, obj);
+    apply(wsAdd, gatedFns, [g]);
+    try {
+      if (!reflectSet(obj, key, g, obj)) defineProp(obj, key, { value: g, writable: true, configurable: true });
+    } catch {
+      /* frozen or locked: the proxy and EIP-6963 paths still apply */
+    }
+  };
+  function harden(provider: unknown) {
+    if (!provider || typeof provider !== 'object') return;
+    const p = provider as object;
+    if (apply(wsHas, isProxy, [p]) || apply(wsHas, hardened, [p])) return; // our own proxy hardens its target in wrap()
+    apply(wsAdd, hardened, [p]);
+    patchMethod(p, 'request', gatedRequest);
+    patchMethod(p, 'send', gatedLegacy);
+    patchMethod(p, 'sendAsync', gatedLegacy);
+  }
+
   /* ---------- provider wrapping ---------- */
   const proxyOf = new WeakMap<object, object>();
   const isProxy = new WeakSet<object>();
@@ -191,6 +238,7 @@ import { CHANNEL_TAG, EV_HELLO, EV_STATUS_PREFIX, type PageStatus } from './chan
     if (existing) return existing;
 
     const target = provider as any;
+    harden(target);
     const methodCache: Record<PropertyKey, { fn: Function; wrapper: Function }> = createObject(null);
     let proxy: any;
 
@@ -280,9 +328,24 @@ import { CHANNEL_TAG, EV_HELLO, EV_STATUS_PREFIX, type PageStatus } from './chan
       get: () => (real ? wrap(real) : undefined),
       set: (v: object) => {
         real = v;
+        harden(v);
       },
     });
-  } else if (desc.value && (desc.configurable || desc.writable)) {
+  } else if (desc.configurable) {
+    // A wallet got here first. Replace its plain property with the same accessor,
+    // so a later re-assignment by the wallet (some re-inject on events) is wrapped too.
+    let real: object | undefined = desc.get ? (apply(desc.get, win, []) as object | undefined) : (desc.value as object | undefined);
+    harden(real);
+    defineProp(win, 'ethereum', {
+      configurable: true,
+      enumerable: true,
+      get: () => (real ? wrap(real) : undefined),
+      set: (v: object) => {
+        real = v;
+        harden(v);
+      },
+    });
+  } else if (desc.value && desc.writable) {
     try {
       (win as unknown as { ethereum: object }).ethereum = wrap(desc.value);
     } catch {
@@ -343,6 +406,43 @@ import { CHANNEL_TAG, EV_HELLO, EV_STATUS_PREFIX, type PageStatus } from './chan
     }
   }
 
+  /* ---------- sweep ----------
+   * When window.ethereum is a locked accessor owned by another extension, we
+   * never see the wallet's assignment. Read whatever it returns (often a router
+   * proxy whose writes land on the real provider) and harden that, and ask
+   * EIP-6963 wallets to announce again. Repeated while the page starts up and on
+   * every verdict change, since wallets and routers initialise asynchronously.
+   */
+  const EventC = Event;
+  const setIntervalC = setInterval;
+  const clearIntervalC = clearInterval;
+  const ethGetter = () => getDesc(win, 'ethereum');
+  const sweep = (announce: boolean) => {
+    try {
+      const d = ethGetter();
+      const v = d ? (d.get ? apply(d.get, win, []) : d.value) : undefined;
+      harden(v);
+      const providers = v && typeof v === 'object' ? reflectGet(v as object, 'providers', v) : undefined;
+      if (isArray(providers)) for (let i = 0; i < (providers as unknown[]).length; i++) harden((providers as unknown[])[i]);
+    } catch {
+      /* a getter that throws: nothing to harden */
+    }
+    if (!announce) return;
+    try {
+      apply(dispatch, win, [new EventC('eip6963:requestProvider')]);
+    } catch {
+      /* ignore */
+    }
+  };
+  onStatusChange = () => sweep(true);
+  let sweeps = 0;
+  const sweepTimer = setIntervalC(() => {
+    sweep(false);
+    if (++sweeps >= 40) clearIntervalC(sweepTimer); // first 10 s
+  }, 250);
+  apply(addListener, doc, ['DOMContentLoaded', () => sweep(true)]);
+  apply(addListener, win, ['load', () => sweep(true)]);
+
   /* ---------- EIP-6963: re-announce every provider wrapped ---------- */
   const seen = new WeakSet<object>();
   apply(addListener, win, [
@@ -352,6 +452,7 @@ import { CHANNEL_TAG, EV_HELLO, EV_STATUS_PREFIX, type PageStatus } from './chan
       if (!detail || typeof detail !== 'object' || apply(wsHas, seen, [detail])) return;
       const provider = detail.provider;
       if (!provider) return;
+      harden(provider);
       apply(stopImmediate, ev, []);
       const replacement = freeze({ info: detail.info, provider: wrap(provider) });
       apply(wsAdd, seen, [replacement]);
@@ -359,4 +460,10 @@ import { CHANNEL_TAG, EV_HELLO, EV_STATUS_PREFIX, type PageStatus } from './chan
     },
     true,
   ]);
+
+  // Now, still before any page script: wallets that injected before us announce
+  // again (EIP-6963 announcements are synchronous), so their providers are
+  // hardened before page code can call them; wallets injecting after us announce
+  // into the listener above when they start.
+  sweep(true);
 })();

@@ -44,6 +44,15 @@ function render() {
     $('anchor').textContent = anchorText;
     $('expected').textContent = short(r.manifest.expected);
     $('served').textContent = short(r.manifest.actual);
+    // ENSv2: who could anchor a different build on this name.
+    const w = r.anchor.kind === 'ens' ? r.anchor.writers : undefined;
+    $('writersRow').classList.toggle('hidden', !w?.v2);
+    if (w?.v2) {
+      const parts = [`${w.allRecords} account${w.allRecords === 1 ? '' : 's'} with full control`];
+      if (w.thisRecordOnly) parts.push(`${w.thisRecordOnly} key${w.thisRecordOnly === 1 ? '' : 's'} for this record only`);
+      $('writers').textContent = parts.join(', ') + ' (ENSv2)';
+      $('writers').title = 'Accounts that can change the webseal record on this ENS name. Keys limited to this record are typical for CI.';
+    }
     const ul = $('files');
     ul.innerHTML = '';
     for (const f of [...r.files, ...r.inline]) {

@@ -38,7 +38,7 @@ async function anchorFor(host: string, fresh: boolean): Promise<Anchor> {
   // record has not opted in: treat it like any unknown site, not as a failure.
   // A failed lookup still fails closed, since the site may have a record.
   if (!pin && r.notFound) return { kind: 'none', note: `${name} has no webseal record` };
-  return { kind: 'ens', name, chain: settings.chain, hash: r.hash, hashes: r.hashes, error: r.error, derived: !pin };
+  return { kind: 'ens', name, chain: settings.chain, hash: r.hash, hashes: r.hashes, error: r.error, derived: !pin, writers: r.writers };
 }
 
 function badge(tabId: number, state: TabState) {
