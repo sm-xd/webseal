@@ -1,0 +1,28 @@
+{
+  "name": "wagmi-playground",
+  "private": true,
+  "type": "module",
+  "description": "wagmi's vite-react playground (MIT, https://github.com/wevm/wagmi/tree/main/playgrounds/vite-react), used as a real open-source dApp protected by WebSeal",
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite"
+  },
+  "dependencies": {
+    "@tanstack/query-sync-storage-persister": "5.90.12",
+    "@tanstack/react-query": "5.90.14",
+    "@tanstack/react-query-persist-client": "5.90.12",
+    "accounts": "0.18.0",
+    "cuer": "0.0.3",
+    "idb-keyval": "6.2.1",
+    "react": "19.2.0",
+    "react-dom": "19.2.0",
+    "viem": "2.56.9",
+    "wagmi": "3.7.11"
+  },
+  "devDependencies": {
+    "@tanstack/react-query-devtools": "5.91.2",
+    "@vitejs/plugin-react": "5.1.2",
+    "buffer": "6.0.3",
+    "vite": "^7.1.0"
+  }
+}
