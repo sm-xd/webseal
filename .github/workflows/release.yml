@@ -1,11 +1,28 @@
-# Builds the demo dApp, writes the integrity manifest, and anchors its hash on ENS.
+# Builds the demo dApp, writes the integrity manifest, deploys it, and anchors
+# its hash on ENS - in that order, and only once the live site is proven to
+# serve exactly this build. Anchoring first (or anchoring a build that was
+# never deployed) would turn every visitor's badge red.
+#
+# Two ENS transactions per release: one before the deploy that accepts the
+# new and the current build, one after the live check that keeps only the new.
+#
 # The only secret is a CI key that should own nothing but the ENS record
 # (an ENSv2 per-record permission, or a subname such as webseal.<app>.eth).
+#
+# Repository variables:
+#   WEBSEAL_ENS_NAME   name to anchor on (e.g. acme.eth or webseal.acme.eth). Empty: no anchoring.
+#   WEBSEAL_CHAIN      sepolia (default) or mainnet
+#   WEBSEAL_SITE_URL   public URL of the deployed site. Empty: no anchoring.
+# Secret:
+#   WEBSEAL_CI_KEY     private key allowed to set the record
 name: release
 on:
   push:
     branches: [main]
   workflow_dispatch:
+concurrency:
+  group: release
+  cancel-in-progress: false
 jobs:
   build-and-anchor:
     runs-on: ubuntu-latest
@@ -19,12 +36,40 @@ jobs:
       - run: pnpm build
       - run: pnpm test && pnpm e2e
       - name: Write manifest
-        run: node packages/cli/dist/webseal.js build --dist apps/demo/dist --name "${{ vars.WEBSEAL_ENS_NAME }}"
-      - name: Upload site (replace with your host's deploy step)
+        id: manifest
+        run: |
+          out=$(node packages/cli/dist/webseal.js build --dist apps/demo/dist --name "${{ vars.WEBSEAL_ENS_NAME }}")
+          echo "$out"
+          echo "hash=$(echo "$out" | awk '/^hash/ {print $2}')" >> "$GITHUB_OUTPUT"
+      - name: Upload site
         uses: actions/upload-artifact@v4
         with: { name: site, path: apps/demo/dist }
-      - name: Anchor manifest hash on ENS
-        if: ${{ vars.WEBSEAL_ENS_NAME != '' }}
+
+      # Before the deploy, list the new hash next to the current one (v1:sha256:<new>,<old>), so
+      # visitors stay green while the CDN switches over. The last step drops the old hash.
+      - name: Pre-announce the new build on ENS
+        if: ${{ vars.WEBSEAL_ENS_NAME != '' && vars.WEBSEAL_SITE_URL != '' }}
         env:
           WEBSEAL_PRIVATE_KEY: ${{ secrets.WEBSEAL_CI_KEY }}
-        run: node packages/cli/dist/webseal.js publish --name "${{ vars.WEBSEAL_ENS_NAME }}" --chain "${{ vars.WEBSEAL_CHAIN || 'sepolia' }}"
+        run: node packages/cli/dist/webseal.js publish --name "${{ vars.WEBSEAL_ENS_NAME }}" --chain "${{ vars.WEBSEAL_CHAIN || 'sepolia' }}" --hash "${{ steps.manifest.outputs.hash }}" --keep-current
+
+      # Replace this step with your host's deploy (S3 sync, Pages, IPFS pin + contenthash, ...).
+      # It must publish apps/demo/dist, including .well-known/webseal.json, unchanged.
+      - name: Deploy (placeholder)
+        run: echo "No deploy step configured. The next step only anchors once WEBSEAL_SITE_URL serves this build."
+
+      - name: Check the live site serves this build
+        if: ${{ vars.WEBSEAL_ENS_NAME != '' && vars.WEBSEAL_SITE_URL != '' }}
+        run: |
+          # CDNs can take a moment to pick up a deploy: retry for up to five minutes.
+          for i in $(seq 1 10); do
+            node packages/cli/dist/webseal.js verify "${{ vars.WEBSEAL_SITE_URL }}" --expect "${{ steps.manifest.outputs.hash }}" && exit 0
+            echo "not live yet, retrying in 30 s"; sleep 30
+          done
+          echo "the live site does not serve this build; not anchoring"; exit 1
+      - name: Finalize the ENS record (new build only)
+        if: ${{ vars.WEBSEAL_ENS_NAME != '' && vars.WEBSEAL_SITE_URL != '' }}
+        env:
+          WEBSEAL_PRIVATE_KEY: ${{ secrets.WEBSEAL_CI_KEY }}
+        # publish skips the transaction when the record already has this value, and reads it back after writing.
+        run: node packages/cli/dist/webseal.js publish --name "${{ vars.WEBSEAL_ENS_NAME }}" --chain "${{ vars.WEBSEAL_CHAIN || 'sepolia' }}" --hash "${{ steps.manifest.outputs.hash }}"
